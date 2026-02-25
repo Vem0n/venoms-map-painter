@@ -94,6 +94,9 @@ describe('writeDefinitionCsv', () => {
   });
 
   it('writes correct CSV format with header', async () => {
+    // Mock readFile to return an existing file (preserves header and EOL)
+    vi.mocked(fs.readFile).mockResolvedValue('0;0;0;0;x;x\r\n1;99;99;99;Old;x\r\n');
+
     const provinces: ProvinceData[] = [
       { id: 1, color: { r: 130, g: 12, b: 56 }, name: 'Normandie' },
       { id: 2, color: { r: 255, g: 0, b: 128 }, name: 'Ile de France' },
@@ -103,7 +106,7 @@ describe('writeDefinitionCsv', () => {
 
     expect(fs.writeFile).toHaveBeenCalledWith(
       '/fake/definition.csv',
-      'id;r;g;b;name;x\n1;130;12;56;Normandie;x\n2;255;0;128;Ile de France;x',
+      '0;0;0;0;x;x\r\n1;130;12;56;Normandie;x\r\n2;255;0;128;Ile de France;x\r\n',
       'utf-8'
     );
   });

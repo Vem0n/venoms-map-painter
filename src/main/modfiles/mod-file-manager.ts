@@ -11,7 +11,7 @@
 
 import path from 'path';
 import fs from 'fs/promises';
-import { ProvinceData, ModData, LoadModResult, CreateProvinceRequest, LandedTitleNode } from '@shared/types';
+import { ProvinceData, ModData, LoadModResult, CreateProvinceRequest, LandedTitleNode, ReconcileRequest } from '@shared/types';
 import { parseDefinitionCsv, writeDefinitionCsv } from './definition-csv';
 import {
   parseLandedTitles,
@@ -24,8 +24,11 @@ import {
   generateCountyStub,
   renameTitleInFile,
 } from './landed-titles';
-import { parseProvinceHistories, saveProvinceHistory, generateProvinceStub } from './history-provinces';
-import { parseProvinceTerrain, saveProvinceTerrain } from './province-terrain';
+import { parseProvinceHistories, saveProvinceHistory, generateProvinceStub, removeProvinceHistories } from './history-provinces';
+import { parseProvinceTerrain, saveProvinceTerrain, reconcileProvinceTerrain } from './province-terrain';
+import { reconcileLandedTitles } from './landed-titles';
+import { reconcileMapObjectLocators } from './map-object-locators';
+import { reconcileDefaultMap } from './default-map';
 
 export class ModFileManager {
   private modPath: string;
@@ -336,6 +339,57 @@ export class ModFileManager {
   }
 
   /**
+   * Reconcile province files after orphan removal.
+   * Creates a timestamped backup, removes orphaned entries from all mod files,
+   * and remaps province IDs to be sequential.
+   */
+  async reconcile(data: ReconcileRequest): Promise<void> {
+    const removedSet = new Set(data.removedIds);
+    const removedTitleSet = new Set(data.removedTitleKeys);
+
+    // 1. Create timestamped backup directory
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 19);
+    const backupDir = path.join(this.modPath, 'backups', `reconcile_${stamp}`);
+    await fs.mkdir(backupDir, { recursive: true });
+
+    // 2. Backup affected files
+    const defPath = path.join(this.modPath, 'map_data', 'definition.csv');
+    await this.backupFile(defPath, backupDir);
+    await this.backupDirectory(path.join(this.modPath, 'history', 'provinces'), backupDir);
+    await this.backupDirectory(path.join(this.modPath, 'common', 'landed_titles'), backupDir);
+    const terrainFile = path.join(this.modPath, 'common', 'province_terrain', '00_province_terrain.txt');
+    await this.backupFile(terrainFile, backupDir);
+    await this.backupDirectory(path.join(this.modPath, 'gfx', 'map', 'map_object_data'), backupDir);
+    const defaultMapFile = path.join(this.modPath, 'map_data', 'default.map');
+    await this.backupFile(defaultMapFile, backupDir);
+
+    // 3. Rewrite definition.csv with surviving renumbered provinces
+    await writeDefinitionCsv(defPath, data.provinces);
+
+    // 4. Clean up history files
+    const histDir = path.join(this.modPath, 'history', 'provinces');
+    await removeProvinceHistories(histDir, removedSet, data.idMap);
+
+    // 5. Clean up landed_titles
+    const titlesDir = path.join(this.modPath, 'common', 'landed_titles');
+    await reconcileLandedTitles(titlesDir, removedSet, removedTitleSet, data.idMap);
+
+    // 6. Clean up terrain
+    await reconcileProvinceTerrain(this.modPath, removedSet, data.idMap);
+
+    // 7. Clean up map object locator files (building positions, siege icons, etc.)
+    await reconcileMapObjectLocators(this.modPath, removedSet, data.idMap);
+
+    // 8. Clean up default.map (sea_zones, impassable_seas, rivers, lakes, mountains)
+    await reconcileDefaultMap(this.modPath, removedSet, data.idMap);
+
+    // 9. Update in-memory state
+    this.provinces = data.provinces;
+    this.landedTitles = await parseLandedTitles(titlesDir);
+    this.titleIndex = buildTitleIndex(this.landedTitles);
+  }
+
+  /**
    * Verify the mod directory has the expected structure.
    */
   private async validateModDirectory(): Promise<void> {
@@ -366,6 +420,20 @@ export class ModFileManager {
       await fs.copyFile(filePath, backupPath);
     } catch {
       // File doesn't exist, nothing to back up
+    }
+  }
+
+  /**
+   * Copy all files in a directory to the backup directory.
+   */
+  private async backupDirectory(dirPath: string, backupDir: string): Promise<void> {
+    try {
+      const files = await fs.readdir(dirPath);
+      for (const file of files) {
+        await this.backupFile(path.join(dirPath, file), backupDir);
+      }
+    } catch {
+      // Directory doesn't exist, nothing to back up
     }
   }
 }

@@ -25,4 +25,5 @@ export const IPC = {
   SAVE_MOD: 'save-mod',
   CREATE_PROVINCE: 'create-province',
   SELECT_DIRECTORY: 'select-directory',
+  RECONCILE_PROVINCES: 'reconcile-provinces',
 } as const;

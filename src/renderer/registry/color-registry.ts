@@ -265,6 +265,49 @@ export class ColorRegistry {
   }
 
   /**
+   * Remove a province by its ID.
+   * Clears it from all internal maps.
+   */
+  removeProvince(id: number): boolean {
+    const province = this.idToProvince.get(id);
+    if (!province) return false;
+    const key = rgbToKey(province.color);
+    this.colorToProvince.delete(key);
+    this.idToProvince.delete(id);
+    this.usedColors.delete(key);
+    this.sortedByName = this.sortedByName.filter(p => p.id !== id);
+    return true;
+  }
+
+  /**
+   * Remap province IDs after reconciliation.
+   * Mutates province objects in-place and rebuilds internal maps.
+   */
+  applyIdRemap(idMap: Map<number, number>): void {
+    const newIdMap = new Map<number, ProvinceData>();
+    for (const [oldId, province] of this.idToProvince) {
+      const newId = idMap.get(oldId);
+      if (newId !== undefined) {
+        province.id = newId;
+        newIdMap.set(newId, province);
+      } else {
+        // ID not in map means it stayed the same (shouldn't happen after proper remap)
+        newIdMap.set(oldId, province);
+      }
+    }
+    this.idToProvince = newIdMap;
+
+    let maxId = 0;
+    for (const id of this.idToProvince.keys()) {
+      if (id > maxId) maxId = id;
+    }
+    this.nextId = maxId + 1;
+
+    this.sortedByName = Array.from(this.idToProvince.values())
+      .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+  }
+
+  /**
    * Get all registered provinces.
    */
   getAllProvinces(): ProvinceData[] {

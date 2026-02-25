@@ -285,6 +285,189 @@ export async function renameTitleInFile(
   return false;
 }
 
+/**
+ * Reconcile landed_titles files after province removal.
+ *
+ * 1. Remove barony blocks whose `province = X` matches a removed ID.
+ * 2. Remove parent title blocks the user confirmed for removal.
+ * 3. Remap remaining `province = oldId` references to new IDs.
+ *
+ * Preserves all comments, whitespace, and formatting.
+ *
+ * @param dirPath - common/landed_titles directory
+ * @param removedIds - Province IDs whose baronies should be removed
+ * @param removedTitleKeys - Parent title keys to also remove (user-confirmed)
+ * @param idMap - Old ID → New ID for surviving provinces
+ */
+export async function reconcileLandedTitles(
+  dirPath: string,
+  removedIds: Set<number>,
+  removedTitleKeys: Set<string>,
+  idMap: Record<number, number>
+): Promise<void> {
+  let files: string[];
+  try {
+    files = await fs.readdir(dirPath);
+  } catch {
+    return;
+  }
+
+  for (const file of files) {
+    if (!file.endsWith('.txt')) continue;
+    const filePath = path.join(dirPath, file);
+
+    let content: string;
+    try {
+      content = await fs.readFile(filePath, 'utf-8');
+    } catch {
+      continue;
+    }
+
+    let modified = false;
+
+    // Phase A: Find and remove blocks
+    // First, find barony blocks with province = removedId
+    const blocksToRemove = findBlocksToRemove(content, removedIds, removedTitleKeys);
+
+    if (blocksToRemove.length > 0) {
+      // Remove from bottom to top to preserve character offsets
+      const sorted = [...blocksToRemove].sort((a, b) => b.start - a.start);
+      for (const range of sorted) {
+        content = content.substring(0, range.start) + content.substring(range.end);
+      }
+      modified = true;
+    }
+
+    // Phase B: Remap province IDs
+    const remapped = content.replace(
+      /(\bprovince\s*=\s*)(\d+)/g,
+      (_match, prefix: string, idStr: string) => {
+        const oldId = parseInt(idStr, 10);
+        const newId = idMap[oldId];
+        if (newId !== undefined && newId !== oldId) {
+          modified = true;
+          return `${prefix}${newId}`;
+        }
+        return `${prefix}${idStr}`;
+      }
+    );
+
+    if (modified) {
+      await fs.writeFile(filePath, remapped, 'utf-8');
+    }
+  }
+}
+
+/**
+ * Find character ranges of blocks to remove from landed_titles content.
+ * Merges overlapping ranges (e.g. a parent title containing a child barony).
+ */
+function findBlocksToRemove(
+  content: string,
+  removedIds: Set<number>,
+  removedTitleKeys: Set<string>
+): Array<{ start: number; end: number }> {
+  const ranges: Array<{ start: number; end: number }> = [];
+
+  // First, find explicitly-confirmed parent title blocks (these may contain baronies)
+  for (const titleKey of removedTitleKeys) {
+    const titlePattern = new RegExp(`^[ \\t]*${escapeRegex(titleKey)}\\s*=\\s*\\{`, 'm');
+    const titleMatch = content.match(titlePattern);
+    if (!titleMatch || titleMatch.index === undefined) continue;
+
+    let start = titleMatch.index;
+    const blockEnd = findBlockEnd(content, start + titleMatch[0].indexOf('{'));
+    if (blockEnd < 0) continue;
+
+    let end = blockEnd;
+    if (content[end] === '\n') end++;
+    else if (content[end] === '\r' && content[end + 1] === '\n') end += 2;
+
+    while (start > 0 && content[start - 1] !== '\n' && content[start - 1] !== '\r') {
+      start--;
+    }
+
+    ranges.push({ start, end });
+  }
+
+  // Then, find barony blocks with province = <removedId>
+  const provincePattern = /\bprovince\s*=\s*(\d+)/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = provincePattern.exec(content)) !== null) {
+    const id = parseInt(match[1], 10);
+    if (!removedIds.has(id)) continue;
+
+    // Check if this position is already inside a range being removed
+    const alreadyCovered = ranges.some(r => match!.index >= r.start && match!.index < r.end);
+    if (alreadyCovered) continue;
+
+    const baronyStart = findEnclosingBlockStart(content, match.index);
+    if (baronyStart < 0) continue;
+
+    const baronyEnd = findBlockEnd(content, baronyStart);
+    if (baronyEnd < 0) continue;
+
+    let end = baronyEnd;
+    if (content[end] === '\n') end++;
+    else if (content[end] === '\r' && content[end + 1] === '\n') end += 2;
+
+    let start = baronyStart;
+    while (start > 0 && content[start - 1] !== '\n' && content[start - 1] !== '\r') {
+      start--;
+    }
+
+    ranges.push({ start, end });
+  }
+
+  return ranges;
+}
+
+/**
+ * Walk backward from a position to find the start of the enclosing b_ block.
+ * Looks for a line matching `b_xxx = {` before the given position.
+ */
+function findEnclosingBlockStart(content: string, pos: number): number {
+  // Walk backward line by line
+  let i = pos;
+  while (i > 0) {
+    // Find start of current line
+    let lineStart = i;
+    while (lineStart > 0 && content[lineStart - 1] !== '\n') lineStart--;
+
+    const line = content.substring(lineStart, i + 1);
+    const match = line.match(/^\s*b_\w+\s*=\s*\{/);
+    if (match) {
+      return lineStart;
+    }
+
+    i = lineStart - 1;
+    if (i < 0) break;
+  }
+  return -1;
+}
+
+/**
+ * From a position at or before an opening `{`, find the matching closing `}`.
+ * Returns the position immediately AFTER the closing brace.
+ */
+function findBlockEnd(content: string, startPos: number): number {
+  // Find the first { from startPos
+  let i = startPos;
+  while (i < content.length && content[i] !== '{') i++;
+  if (i >= content.length) return -1;
+
+  let depth = 0;
+  for (; i < content.length; i++) {
+    if (content[i] === '{') depth++;
+    if (content[i] === '}') {
+      depth--;
+      if (depth === 0) return i + 1; // position after the }
+    }
+  }
+  return -1;
+}
+
 function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

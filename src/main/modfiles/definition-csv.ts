@@ -57,15 +57,31 @@ export async function writeDefinitionCsv(
   filePath: string,
   provinces: ProvinceData[]
 ): Promise<void> {
+  // Read original to detect BOM, EOL style, and header line
+  let hasBom = false;
+  let eol = '\r\n';
+  let headerLine = '0;0;0;0;x;x';
+  try {
+    const original = await fs.readFile(filePath, 'utf-8');
+    hasBom = original.charCodeAt(0) === 0xFEFF;
+    if (original.includes('\r\n')) eol = '\r\n';
+    else eol = '\n';
+    // Preserve the original header/first line exactly
+    const stripped = hasBom ? original.slice(1) : original;
+    const firstLine = stripped.split(/\r?\n/)[0];
+    if (firstLine) headerLine = firstLine;
+  } catch { /* no existing file */ }
+
   // Backup first
   try {
     await fs.copyFile(filePath, `${filePath}.bak`);
   } catch { /* no existing file */ }
 
-  const lines = ['id;r;g;b;name;x'];
+  const lines = [headerLine];
   for (const p of provinces) {
     lines.push(`${p.id};${p.color.r};${p.color.g};${p.color.b};${p.name};x`);
   }
 
-  await fs.writeFile(filePath, lines.join('\n'), 'utf-8');
+  const content = (hasBom ? '\uFEFF' : '') + lines.join(eol) + eol;
+  await fs.writeFile(filePath, content, 'utf-8');
 }

@@ -11,7 +11,7 @@ import path from 'path';
 import { loadPng, savePng } from './image-io';
 import { parseDefinitionCsv } from './modfiles/definition-csv';
 import { ModFileManager } from './modfiles/mod-file-manager';
-import type { ProvinceData, CreateProvinceRequest } from '@shared/types';
+import type { ProvinceData, CreateProvinceRequest, ReconcileRequest } from '@shared/types';
 
 /** Active ModFileManager instance — created on load-mod, reused for save/create */
 let activeManager: ModFileManager | null = null;
@@ -164,5 +164,20 @@ export function registerIpcHandlers(): void {
     const province = await activeManager.createProvinceStubs(request);
     console.log(`create-province: created province ${province.id} "${province.name}"`);
     return province;
+  });
+
+  /**
+   * Reconcile provinces — remove orphaned entries and remap IDs.
+   * Called after user confirms the reconciliation dialog.
+   */
+  ipcMain.handle('reconcile-provinces', async (
+    _event: IpcMainInvokeEvent,
+    data: ReconcileRequest
+  ) => {
+    if (!activeManager) {
+      throw new Error('No mod loaded. Call load-mod first.');
+    }
+    await activeManager.reconcile(data);
+    console.log(`reconcile-provinces: removed ${data.removedIds.length} provinces, remapped ${Object.keys(data.idMap).length} IDs`);
   });
 }

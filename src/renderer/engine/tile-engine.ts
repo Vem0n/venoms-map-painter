@@ -11,7 +11,7 @@
  *   engine.startRenderLoop();
  */
 
-import { RGB, TileCoord } from '@shared/types';
+import { RGB, TileCoord, rgbToKey } from '@shared/types';
 import { TILE_SIZE, BYTES_PER_PIXEL, MIN_ZOOM, MAX_ZOOM } from '@shared/constants';
 import { createProgram, TILE_VERTEX_SHADER, TILE_FRAGMENT_SHADER } from './shaders';
 
@@ -489,6 +489,57 @@ export class TileEngine {
           } else {
             resolve({ gx: Math.round(sumX / count), gy: Math.round(sumY / count) });
           }
+        }
+      };
+
+      processChunk();
+    });
+  }
+
+  /**
+   * Collect all unique RGB colors present on the map.
+   * Iterates every pixel in chunked batches, yielding to the event loop
+   * between chunks to avoid UI freeze on large maps.
+   *
+   * @param skipColors - Set of rgbToKey strings to exclude (empty/unassigned colors)
+   * @returns Promise resolving to Set of rgbToKey strings for all colors found
+   */
+  collectUsedColorsAsync(skipColors: Set<string>): Promise<Set<string>> {
+    if (!this.loaded) return Promise.resolve(new Set());
+
+    const totalTiles = this.tilesX * this.tilesY;
+    const chunkSize = 4; // fewer tiles per chunk since stride=1
+    let tileIdx = 0;
+    const result = new Set<string>();
+
+    return new Promise((resolve) => {
+      const processChunk = (): void => {
+        const end = Math.min(tileIdx + chunkSize, totalTiles);
+        for (; tileIdx < end; tileIdx++) {
+          const tx = tileIdx % this.tilesX;
+          const ty = Math.floor(tileIdx / this.tilesX);
+          const buf = this.tileBuffers[tileIdx];
+          const tileBaseX = tx * TILE_SIZE;
+          const tileBaseY = ty * TILE_SIZE;
+
+          const validW = Math.min(TILE_SIZE, this.mapWidth - tileBaseX);
+          const validH = Math.min(TILE_SIZE, this.mapHeight - tileBaseY);
+
+          for (let ly = 0; ly < validH; ly++) {
+            for (let lx = 0; lx < validW; lx++) {
+              const offset = (ly * TILE_SIZE + lx) * BYTES_PER_PIXEL;
+              const key = rgbToKey({ r: buf[offset], g: buf[offset + 1], b: buf[offset + 2] });
+              if (!skipColors.has(key)) {
+                result.add(key);
+              }
+            }
+          }
+        }
+
+        if (tileIdx < totalTiles) {
+          setTimeout(processChunk, 0);
+        } else {
+          resolve(result);
         }
       };
 
