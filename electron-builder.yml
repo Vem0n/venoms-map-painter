@@ -1,0 +1,35 @@
+appId: com.ven0m.mappainter
+productName: "Ven0m's Map Painter"
+copyright: Copyright © 2025 Ven0m
+
+directories:
+  output: release
+
+files:
+  - dist/**/*
+  - node_modules/**/*
+  - "!node_modules/**/README*"
+  - "!node_modules/**/CHANGELOG*"
+
+# sharp has native bindings that need rebuilding for Electron
+npmRebuild: true
+
+mac:
+  icon: build/icon.icns
+  category: public.app-category.graphics-design
+  target:
+    - dmg
+    - zip
+
+win:
+  icon: build/favicon.ico
+  target:
+    - nsis
+    - portable
+
+linux:
+  icon: build/icon.png
+  category: Graphics
+  target:
+    - AppImage
+    - deb
