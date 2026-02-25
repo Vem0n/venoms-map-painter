@@ -143,6 +143,18 @@ export interface CreateProvinceRequest {
   historyFile?: string;
 }
 
+/** Data sent to main process for province reconciliation */
+export interface ReconcileRequest {
+  /** Province IDs to remove from all mod files */
+  removedIds: number[];
+  /** Old ID → New ID mapping for surviving provinces */
+  idMap: Record<number, number>;
+  /** Parent title keys the user confirmed for removal */
+  removedTitleKeys: string[];
+  /** The surviving, renumbered province list */
+  provinces: ProvinceData[];
+}
+
 /** Undo/redo action */
 export interface UndoAction {
   /** Which tiles were affected */

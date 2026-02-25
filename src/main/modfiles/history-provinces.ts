@@ -249,6 +249,106 @@ function buildProvinceBlock(idStr: string, province: ProvinceData, indent: strin
 }
 
 /**
+ * Remove province blocks for deleted IDs from all history files,
+ * and remap remaining province IDs to their new sequential values.
+ *
+ * - If a file contains only deleted province blocks, the file is deleted.
+ * - If a file has a mix, only the deleted blocks are removed.
+ * - Remaining province ID headers are updated per the idMap.
+ *
+ * @param dirPath - history/provinces directory
+ * @param removedIds - Province IDs to remove
+ * @param idMap - Old ID → New ID mapping for surviving provinces
+ */
+export async function removeProvinceHistories(
+  dirPath: string,
+  removedIds: Set<number>,
+  idMap: Record<number, number>
+): Promise<void> {
+  let files: string[];
+  try {
+    files = await fs.readdir(dirPath);
+  } catch {
+    return;
+  }
+
+  for (const file of files) {
+    if (!file.endsWith('.txt')) continue;
+    const filePath = path.join(dirPath, file);
+
+    let content: string;
+    try {
+      content = await fs.readFile(filePath, 'utf-8');
+    } catch {
+      continue;
+    }
+
+    const eol = content.includes('\r\n') ? '\r\n' : '\n';
+    const lines = content.split(/\r?\n/);
+
+    // Find all province blocks: line ranges and their IDs
+    const blocks: Array<{ id: number; startLine: number; endLine: number }> = [];
+    for (let i = 0; i < lines.length; i++) {
+      const match = lines[i].match(/^(\s*)(\d+)\s*=\s*\{/);
+      if (!match) continue;
+
+      const id = parseInt(match[2], 10);
+      if (isNaN(id)) continue;
+
+      // Find the closing brace via brace-counting
+      let depth = 0;
+      let endLine = i;
+      for (let j = i; j < lines.length; j++) {
+        for (const ch of lines[j]) {
+          if (ch === '{') depth++;
+          if (ch === '}') {
+            depth--;
+            if (depth === 0) {
+              endLine = j;
+              break;
+            }
+          }
+        }
+        if (depth === 0) break;
+      }
+
+      blocks.push({ id, startLine: i, endLine });
+    }
+
+    if (blocks.length === 0) continue;
+
+    // Check if ALL blocks are removed
+    const allRemoved = blocks.every(b => removedIds.has(b.id));
+    if (allRemoved) {
+      await fs.unlink(filePath);
+      continue;
+    }
+
+    // Remove deleted blocks (process from bottom to top to preserve indices)
+    const sortedBlocks = [...blocks].sort((a, b) => b.startLine - a.startLine);
+    for (const block of sortedBlocks) {
+      if (removedIds.has(block.id)) {
+        lines.splice(block.startLine, block.endLine - block.startLine + 1);
+      }
+    }
+
+    // Remap remaining province IDs in block headers
+    let result = lines.join(eol);
+    for (const block of blocks) {
+      if (removedIds.has(block.id)) continue;
+      const newId = idMap[block.id];
+      if (newId !== undefined && newId !== block.id) {
+        // Replace the block header: "42 = {" → "7 = {"
+        const headerPattern = new RegExp(`(^|\\n)(\\s*)${block.id}(\\s*=\\s*\\{)`, 'g');
+        result = result.replace(headerPattern, `$1$2${newId}$3`);
+      }
+    }
+
+    await fs.writeFile(filePath, result, 'utf-8');
+  }
+}
+
+/**
  * Generate a standalone stub file for a new province.
  * Used when there's no existing history file to append to.
  */

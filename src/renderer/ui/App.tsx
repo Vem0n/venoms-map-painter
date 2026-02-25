@@ -18,9 +18,13 @@ import { UndoManager } from '@engine/undo-manager';
 import { ColorRegistry } from '@registry/color-registry';
 import { ToolManager } from '@tools/tool-manager';
 import ProvinceSearch from './components/ProvinceSearch';
+import ReconcileDialog from './components/ReconcileDialog';
 import { theme } from './theme';
 import type { ToolType, RGB, ProvinceData, LandedTitleNode, CreateProvinceRequest } from '@shared/types';
+import { rgbToKey } from '@shared/types';
 import { MAX_ZOOM } from '@shared/constants';
+import { detectOrphans, buildIdRemap } from '../reconciliation/reconcile';
+import type { OrphanedParent } from '../reconciliation/reconcile';
 
 type SidebarMode = 'painting' | 'inspector' | 'creator';
 
@@ -51,6 +55,11 @@ export default function App() {
   const [modifiedProvinceIds, setModifiedProvinceIds] = useState<Set<number>>(new Set());
   const [landedTitles, setLandedTitles] = useState<LandedTitleNode[]>([]);
   const [historyFiles, setHistoryFiles] = useState<string[]>([]);
+
+  // Reconciliation dialog state
+  const [showReconcileDialog, setShowReconcileDialog] = useState(false);
+  const [reconcileOrphans, setReconcileOrphans] = useState<ProvinceData[]>([]);
+  const [reconcileParents, setReconcileParents] = useState<OrphanedParent[]>([]);
 
   // Current mod path
   const modPathRef = useRef<string | null>(null);
@@ -280,7 +289,34 @@ export default function App() {
     }
   }, [modifiedProvinceIds]);
 
-  // Save everything: map image + mod files
+  // Perform the actual save (image + mod files) — called after reconciliation or directly
+  const performSave = useCallback(async () => {
+    const engine = engineRef.current;
+    if (!modPathRef.current || !engine || !engine.isLoaded()) return;
+
+    try {
+      setStatus('Saving provinces.png...');
+      const rgbaBuffer = new Uint8Array(engine.stitchFullImage().buffer);
+      const { width, height } = engine.getMapSize();
+      await window.mapPainter.saveImage(modPathRef.current, rgbaBuffer, width, height);
+
+      setStatus('Saving mod files...');
+      const provinces = registryRef.current.getAllProvinces();
+      await window.mapPainter.saveMod({
+        provinces,
+        modifiedProvinceIds: Array.from(modifiedProvinceIds),
+      });
+      setModDirty(false);
+      setModifiedProvinceIds(new Set());
+
+      setStatus('Saved provinces.png + mod files');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setStatus(`Save error: ${msg}`);
+    }
+  }, [modifiedProvinceIds]);
+
+  // Save everything: scan for orphans first, show reconciliation dialog if needed
   const handleSaveAll = useCallback(async () => {
     const engine = engineRef.current;
     if (!modPathRef.current || !engine || !engine.isLoaded()) {
@@ -289,29 +325,93 @@ export default function App() {
     }
 
     try {
-      setStatus('Saving provinces.png...');
-      const rgbaBuffer = new Uint8Array(engine.stitchFullImage().buffer);
-      const { width, height } = engine.getMapSize();
-      await window.mapPainter.saveImage(modPathRef.current, rgbaBuffer, width, height);
+      // Scan the map for colors actually present
+      setStatus('Scanning map for orphaned provinces...');
+      const emptyColorKeys = new Set(emptyColors.map(c => rgbToKey(c)));
+      const usedColors = await engine.collectUsedColorsAsync(emptyColorKeys);
 
-      // Also save mod files if dirty
-      if (modDirty) {
-        setStatus('Saving mod files...');
-        const provinces = registryRef.current.getAllProvinces();
-        await window.mapPainter.saveMod({
-          provinces,
-          modifiedProvinceIds: Array.from(modifiedProvinceIds),
-        });
-        setModDirty(false);
-        setModifiedProvinceIds(new Set());
+      // Detect orphans
+      const allProvinces = registryRef.current.getAllProvinces();
+      const { orphanedProvinces, orphanedParents } = detectOrphans(
+        allProvinces, usedColors, landedTitles
+      );
+
+      if (orphanedProvinces.length > 0) {
+        // Show reconciliation dialog
+        setReconcileOrphans(orphanedProvinces);
+        setReconcileParents(orphanedParents);
+        setShowReconcileDialog(true);
+      } else {
+        // No orphans — save directly
+        await performSave();
       }
-
-      setStatus('Saved provinces.png + mod files');
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       setStatus(`Save error: ${msg}`);
     }
-  }, [modDirty, modifiedProvinceIds]);
+  }, [emptyColors, landedTitles, performSave]);
+
+  // Reconciliation: user confirmed removal
+  const handleReconcileConfirm = useCallback(async (
+    confirmedRemovedIds: number[],
+    confirmedRemovedTitleKeys: string[]
+  ) => {
+    setShowReconcileDialog(false);
+
+    if (confirmedRemovedIds.length === 0) {
+      // Nothing to remove, just save
+      await performSave();
+      return;
+    }
+
+    try {
+      setStatus('Reconciling provinces...');
+      const allProvinces = registryRef.current.getAllProvinces();
+      const removedSet = new Set(confirmedRemovedIds);
+
+      // Build sequential ID remap
+      const idMapEntries = buildIdRemap(allProvinces, removedSet);
+      const idMap: Record<number, number> = {};
+      for (const [oldId, newId] of idMapEntries) {
+        idMap[oldId] = newId;
+      }
+
+      // Build surviving province list with new IDs
+      const surviving = allProvinces
+        .filter(p => !removedSet.has(p.id))
+        .map(p => ({ ...p, id: idMap[p.id] ?? p.id }))
+        .sort((a, b) => a.id - b.id);
+
+      // Send to main process for file cleanup
+      await window.mapPainter.reconcileProvinces({
+        removedIds: confirmedRemovedIds,
+        idMap,
+        removedTitleKeys: confirmedRemovedTitleKeys,
+        provinces: surviving,
+      });
+
+      // Update registry
+      for (const id of confirmedRemovedIds) {
+        registryRef.current.removeProvince(id);
+      }
+      registryRef.current.applyIdRemap(idMapEntries);
+      setProvinceCount(registryRef.current.count);
+
+      setStatus(`Reconciled: removed ${confirmedRemovedIds.length} provinces, renumbered IDs`);
+
+      // Now perform the normal save
+      await performSave();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setStatus(`Reconciliation error: ${msg}`);
+    }
+  }, [performSave]);
+
+  // Reconciliation: user cancelled
+  const handleReconcileCancel = useCallback(() => {
+    setShowReconcileDialog(false);
+    setStatus('Save cancelled — orphaned provinces detected');
+  }, []);
 
   // Creator: create new province
   const handleCreateProvince = useCallback(async (request: CreateProvinceRequest): Promise<ProvinceData | null> => {
@@ -720,6 +820,15 @@ export default function App() {
         activeColor={activeColor}
         provinceCount={provinceCount}
       />
+
+      {showReconcileDialog && (
+        <ReconcileDialog
+          orphanedProvinces={reconcileOrphans}
+          orphanedParents={reconcileParents}
+          onConfirm={handleReconcileConfirm}
+          onCancel={handleReconcileCancel}
+        />
+      )}
     </div>
   );
 }

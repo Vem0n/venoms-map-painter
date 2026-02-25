@@ -37,6 +37,9 @@ const api = {
 
   listHistoryFiles: (): Promise<string[]> =>
     ipcRenderer.invoke('list-history-files'),
+
+  reconcileProvinces: (data: unknown): Promise<void> =>
+    ipcRenderer.invoke('reconcile-provinces', data),
 };
 
 contextBridge.exposeInMainWorld('mapPainter', api);

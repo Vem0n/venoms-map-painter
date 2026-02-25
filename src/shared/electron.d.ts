@@ -1,6 +1,6 @@
 /** Type declaration for the preload API exposed on window.mapPainter */
 
-import type { LoadModResult, ProvinceData, CreateProvinceRequest, LandedTitleNode } from './types';
+import type { LoadModResult, ProvinceData, CreateProvinceRequest, LandedTitleNode, ReconcileRequest } from './types';
 
 interface MapPainterAPI {
   selectDirectory(): Promise<string | null>;
@@ -13,6 +13,7 @@ interface MapPainterAPI {
   renameTitle(oldKey: string, newKey: string): Promise<boolean>;
   createProvince(data: CreateProvinceRequest): Promise<ProvinceData>;
   listHistoryFiles(): Promise<string[]>;
+  reconcileProvinces(data: ReconcileRequest): Promise<void>;
 }
 
 declare global {

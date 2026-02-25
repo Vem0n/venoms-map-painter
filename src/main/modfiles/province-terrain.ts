@@ -113,6 +113,68 @@ export async function saveProvinceTerrain(
   await fs.writeFile(filePath, lines.join(eol), 'utf-8');
 }
 
+/**
+ * Remove terrain entries for deleted provinces and remap remaining IDs.
+ *
+ * @param modPath - Mod root directory
+ * @param removedIds - Province IDs to remove
+ * @param idMap - Old ID → New ID for surviving provinces
+ */
+export async function reconcileProvinceTerrain(
+  modPath: string,
+  removedIds: Set<number>,
+  idMap: Record<number, number>
+): Promise<void> {
+  const filePath = findTerrainFile(modPath);
+
+  let content: string;
+  try {
+    content = await fs.readFile(filePath, 'utf-8');
+  } catch {
+    return; // File doesn't exist, nothing to reconcile
+  }
+
+  const eol = content.includes('\r\n') ? '\r\n' : '\n';
+  const lines = content.split(/\r?\n/);
+  const result: string[] = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    // Preserve comments and blank lines
+    if (!trimmed || trimmed.startsWith('#')) {
+      result.push(line);
+      continue;
+    }
+
+    const eqIdx = trimmed.indexOf('=');
+    if (eqIdx < 0) {
+      result.push(line);
+      continue;
+    }
+
+    const id = parseInt(trimmed.substring(0, eqIdx).trim(), 10);
+    if (isNaN(id)) {
+      result.push(line);
+      continue;
+    }
+
+    // Skip removed provinces
+    if (removedIds.has(id)) continue;
+
+    // Remap ID if needed
+    const newId = idMap[id];
+    if (newId !== undefined && newId !== id) {
+      const terrain = trimmed.substring(eqIdx + 1).trim();
+      result.push(`${newId} = ${terrain}`);
+    } else {
+      result.push(line);
+    }
+  }
+
+  await fs.writeFile(filePath, result.join(eol), 'utf-8');
+}
+
 /** Resolve the terrain file path */
 function findTerrainFile(modPath: string): string {
   return path.join(modPath, 'common', 'province_terrain', '00_province_terrain.txt');
