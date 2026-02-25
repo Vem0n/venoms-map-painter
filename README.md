@@ -119,8 +119,6 @@ Output goes to `release/`. Builds for Windows (NSIS + portable), macOS (DMG + ZI
 
 - **Indentation when appending to existing counties/duchies**: The new barony entry may have slightly off indentation when inserted into an existing `landed_titles` block. Auto-inserting into an existing hierarchy is a delicate operation — VMP does its best to preserve indentation, existing comments, and correct placement, but it isn't perfect yet. This is purely cosmetic and does not affect how the game loads your province.
 
-- **Deleting provinces doesn't work **: Known issue, I forgot to include it, it's being developed right now and it will be included in v1.0.1, for now treat the tool as creation only
-
 ---
 
 ## Planned Features
