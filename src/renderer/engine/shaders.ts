@@ -1,0 +1,122 @@
+/**
+ * WebGL2 Shaders for tile-based map rendering.
+ * 
+ * Simple textured quad rendering — each tile is drawn as a quad
+ * with its texture. The vertex shader handles positioning based
+ * on camera offset and zoom.
+ */
+
+/** Vertex shader: positions a tile quad in screen space using camera transform */
+export const TILE_VERTEX_SHADER = `#version 300 es
+precision highp float;
+
+// Per-tile uniforms
+uniform vec2 u_tilePosition;  // Top-left corner in global coords
+uniform vec2 u_tileSize;      // Tile dimensions (512, 512)
+
+// Camera uniforms
+uniform vec2 u_cameraOffset;  // Camera pan offset
+uniform float u_zoom;         // Camera zoom level
+uniform vec2 u_resolution;    // Canvas resolution
+
+// Quad vertex (0,0), (1,0), (0,1), (1,1)
+in vec2 a_position;
+
+out vec2 v_texCoord;
+
+void main() {
+    v_texCoord = a_position;
+    
+    // Tile position in global space
+    vec2 worldPos = u_tilePosition + a_position * u_tileSize;
+    
+    // Apply camera transform
+    vec2 screenPos = (worldPos - u_cameraOffset) * u_zoom;
+    
+    // Convert to clip space (-1 to 1)
+    vec2 clipPos = (screenPos / u_resolution) * 2.0 - 1.0;
+    clipPos.y = -clipPos.y; // Flip Y (screen coords → GL coords)
+    
+    gl_Position = vec4(clipPos, 0.0, 1.0);
+}
+`;
+
+/** Fragment shader: samples the tile texture, optionally draws tile grid */
+export const TILE_FRAGMENT_SHADER = `#version 300 es
+precision highp float;
+
+uniform sampler2D u_tileTexture;
+uniform bool u_showGrid;
+uniform vec2 u_tileSize;
+
+in vec2 v_texCoord;
+out vec4 fragColor;
+
+void main() {
+    fragColor = texture(u_tileTexture, v_texCoord);
+
+    if (u_showGrid) {
+        // Draw a 1-pixel border at tile edges
+        vec2 pixelPos = v_texCoord * u_tileSize;
+        float border = 1.0;
+        if (pixelPos.x < border || pixelPos.x > u_tileSize.x - border ||
+            pixelPos.y < border || pixelPos.y > u_tileSize.y - border) {
+            fragColor = mix(fragColor, vec4(1.0, 1.0, 0.0, 1.0), 0.7);
+        }
+    }
+}
+`;
+
+/**
+ * Compile a shader from source.
+ */
+export function compileShader(
+  gl: WebGL2RenderingContext,
+  type: number,
+  source: string
+): WebGLShader {
+  const shader = gl.createShader(type);
+  if (!shader) throw new Error('Failed to create shader');
+
+  gl.shaderSource(shader, source);
+  gl.compileShader(shader);
+
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    const info = gl.getShaderInfoLog(shader);
+    gl.deleteShader(shader);
+    throw new Error(`Shader compile error: ${info}`);
+  }
+
+  return shader;
+}
+
+/**
+ * Create and link a shader program from vertex and fragment shaders.
+ */
+export function createProgram(
+  gl: WebGL2RenderingContext,
+  vertexSource: string,
+  fragmentSource: string
+): WebGLProgram {
+  const vertexShader = compileShader(gl, gl.VERTEX_SHADER, vertexSource);
+  const fragmentShader = compileShader(gl, gl.FRAGMENT_SHADER, fragmentSource);
+
+  const program = gl.createProgram();
+  if (!program) throw new Error('Failed to create program');
+
+  gl.attachShader(program, vertexShader);
+  gl.attachShader(program, fragmentShader);
+  gl.linkProgram(program);
+
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    const info = gl.getProgramInfoLog(program);
+    gl.deleteProgram(program);
+    throw new Error(`Program link error: ${info}`);
+  }
+
+  // Clean up individual shaders (they're now part of the program)
+  gl.deleteShader(vertexShader);
+  gl.deleteShader(fragmentShader);
+
+  return program;
+}
