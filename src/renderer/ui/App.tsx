@@ -19,14 +19,17 @@ import { ColorRegistry } from '@registry/color-registry';
 import { ToolManager } from '@tools/tool-manager';
 import ProvinceSearch from './components/ProvinceSearch';
 import ReconcileDialog from './components/ReconcileDialog';
+import PendingOrphanDialog from './components/PendingOrphanDialog';
+import PendingProvinces from './components/PendingProvinces';
 import { theme } from './theme';
-import type { ToolType, RGB, ProvinceData, LandedTitleNode, CreateProvinceRequest } from '@shared/types';
+import type { ToolType, RGB, ProvinceData, LandedTitleNode, CreateProvinceRequest, PendingProvince, PendingSaveOptions } from '@shared/types';
 import { rgbToKey } from '@shared/types';
 import { MAX_ZOOM } from '@shared/constants';
 import { detectOrphans, buildIdRemap } from '../reconciliation/reconcile';
 import type { OrphanedParent } from '../reconciliation/reconcile';
+import { PendingProvinceMap } from '@registry/pending-province-map';
 
-type SidebarMode = 'painting' | 'inspector' | 'creator';
+type SidebarMode = 'painting' | 'inspector' | 'creator' | 'pending';
 
 export default function App() {
   const [status, setStatus] = useState('No map loaded');
@@ -56,6 +59,24 @@ export default function App() {
   const [landedTitles, setLandedTitles] = useState<LandedTitleNode[]>([]);
   const [historyFiles, setHistoryFiles] = useState<string[]>([]);
 
+  // Pending province map (deferred creation — runtime only)
+  const pendingMapRef = useRef<PendingProvinceMap>(new PendingProvinceMap());
+  const [pendingCount, setPendingCount] = useState(0);
+  const [pendingSaveOptions, setPendingSaveOptions] = useState<PendingSaveOptions>({
+    definitionCsv: true,
+    historyStubs: true,
+    landedTitles: true,
+    terrainEntries: true,
+  });
+
+  // Pending orphan dialog state (shown when erase removes all pixels of a pending province)
+  const [showPendingOrphanDialog, setShowPendingOrphanDialog] = useState(false);
+  const [pendingOrphans, setPendingOrphans] = useState<PendingProvince[]>([]);
+  const pendingOrphanTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Editing a pending province (from Pending tab "Edit" button → switches to Create tab)
+  const [editingPendingKey, setEditingPendingKey] = useState<string | null>(null);
+
   // Reconciliation dialog state
   const [showReconcileDialog, setShowReconcileDialog] = useState(false);
   const [reconcileOrphans, setReconcileOrphans] = useState<ProvinceData[]>([]);
@@ -70,6 +91,27 @@ export default function App() {
   const registryRef = useRef<ColorRegistry>(new ColorRegistry());
   const toolManagerRef = useRef<ToolManager | null>(null);
 
+  /** Check if any pending provinces lost all their pixels (after erase). Debounced. */
+  const scheduleCheckPendingOrphans = useCallback(() => {
+    if (pendingOrphanTimerRef.current) clearTimeout(pendingOrphanTimerRef.current);
+    pendingOrphanTimerRef.current = setTimeout(async () => {
+      const engine = engineRef.current;
+      const pendingMap = pendingMapRef.current;
+      if (!engine || pendingMap.count === 0) return;
+
+      const orphaned: PendingProvince[] = [];
+      for (const entry of pendingMap.getAll()) {
+        const location = await engine.findColorLocationAsync(entry.color);
+        if (!location) orphaned.push(entry);
+      }
+
+      if (orphaned.length > 0) {
+        setPendingOrphans(orphaned);
+        setShowPendingOrphanDialog(true);
+      }
+    }, 200);
+  }, []);
+
   const handleEngineReady = useCallback((engine: TileEngine) => {
     engineRef.current = engine;
 
@@ -82,11 +124,48 @@ export default function App() {
       } else if (event.pixelCount >= 0) {
         setStatus(`${event.tool}: ${event.pixelCount} pixels`);
       }
+
+      // Handle auto-registered new province (paint with unregistered color)
+      if (event.newProvince) {
+        const { id, color, name } = event.newProvince;
+        const pendingMap = pendingMapRef.current;
+        const colorKey = rgbToKey(color);
+
+        const request: CreateProvinceRequest = {
+          name,
+          color,
+          titleTier: 'b',
+        };
+        const pendingEntry: PendingProvince = { id, color, name, request };
+
+        if (!pendingMap.has(colorKey)) {
+          pendingMap.add(pendingEntry);
+        }
+
+        // Patch the undo action so undo/redo can sync the pending tab
+        const lastAction = tm.getLastUndoAction();
+        if (lastAction) {
+          lastAction.pendingAdded = [
+            ...(lastAction.pendingAdded ?? []),
+            pendingEntry,
+          ];
+        }
+
+        setPendingCount(pendingMap.count);
+        setProvinceCount(registryRef.current.count);
+        setStatus(`Auto-registered Province #${id}`);
+      }
+
       // Force re-render for undo/redo button state
       forceUpdate(n => n + 1);
+
+      // After an erase, check if any pending province was fully erased
+      if (event.tool === 'eraser' && pendingMapRef.current.count > 0) {
+        scheduleCheckPendingOrphans();
+      }
     });
     toolManagerRef.current = tm;
-  }, []);
+  }, [scheduleCheckPendingOrphans]);
 
   const handleCursorMove = useCallback((gx: number, gy: number) => {
     setCursorPos({ gx, gy });
@@ -206,19 +285,92 @@ export default function App() {
     setStatus(`Jumped to province ${province.id}: ${province.name}`);
   }, []);
 
-  const handleUndo = useCallback(() => {
-    if (toolManagerRef.current?.undo()) {
-      setStatus('Undo');
-      forceUpdate(n => n + 1);
+  /** Convert a PendingProvince to ProvinceData for ColorRegistry */
+  const pendingToProvinceData = useCallback((entry: PendingProvince): ProvinceData => ({
+    id: entry.id,
+    color: entry.color,
+    name: entry.name,
+    titleTier: entry.request.titleTier,
+    culture: entry.request.culture,
+    religion: entry.request.religion,
+    holding: entry.request.holding,
+    terrain: entry.request.terrain,
+    historyFile: entry.request.historyFile,
+    isNew: true,
+  }), []);
+
+  /** Sync pending map + registry after undo/redo action */
+  const syncPendingFromAction = useCallback((action: { pendingRemoved?: PendingProvince[]; pendingAdded?: PendingProvince[] }, isUndo: boolean) => {
+    const pendingMap = pendingMapRef.current;
+    const registry = registryRef.current;
+    let changed = false;
+
+    // For undo: restore removed, remove added. For redo: remove removed, restore added.
+    const toRestore = isUndo ? action.pendingRemoved : action.pendingAdded;
+    const toRemove = isUndo ? action.pendingAdded : action.pendingRemoved;
+
+    if (toRestore) {
+      for (const entry of toRestore) {
+        if (!pendingMap.has(rgbToKey(entry.color))) {
+          pendingMap.add(entry);
+          registry.addProvince(pendingToProvinceData(entry));
+          changed = true;
+        }
+      }
     }
-  }, []);
+
+    if (toRemove) {
+      for (const entry of toRemove) {
+        const key = rgbToKey(entry.color);
+        if (pendingMap.has(key)) {
+          pendingMap.remove(key);
+          registry.removeProvince(entry.id);
+          changed = true;
+        }
+      }
+    }
+
+    if (changed) {
+      setPendingCount(pendingMap.count);
+      setProvinceCount(registry.count);
+    }
+  }, [pendingToProvinceData]);
+
+  const handleUndo = useCallback(() => {
+    const action = toolManagerRef.current?.undo();
+    if (action) {
+      syncPendingFromAction(action, true);
+      forceUpdate(n => n + 1);
+
+      const restoredCount = action.pendingRemoved?.length ?? 0;
+      const removedCount = action.pendingAdded?.length ?? 0;
+      if (restoredCount > 0) {
+        setStatus(`Undo — restored ${restoredCount} pending province(s)`);
+      } else if (removedCount > 0) {
+        setStatus(`Undo — removed ${removedCount} pending province(s)`);
+      } else {
+        setStatus('Undo');
+      }
+    }
+  }, [syncPendingFromAction]);
 
   const handleRedo = useCallback(() => {
-    if (toolManagerRef.current?.redo()) {
-      setStatus('Redo');
+    const action = toolManagerRef.current?.redo();
+    if (action) {
+      syncPendingFromAction(action, false);
       forceUpdate(n => n + 1);
+
+      const restoredCount = action.pendingAdded?.length ?? 0;
+      const removedCount = action.pendingRemoved?.length ?? 0;
+      if (removedCount > 0) {
+        setStatus(`Redo — removed ${removedCount} pending province(s)`);
+      } else if (restoredCount > 0) {
+        setStatus(`Redo — restored ${restoredCount} pending province(s)`);
+      } else {
+        setStatus('Redo');
+      }
     }
-  }, []);
+  }, [syncPendingFromAction]);
 
   // Province click handler for inspector mode
   const handleProvinceClick = useCallback((gx: number, gy: number) => {
@@ -292,14 +444,52 @@ export default function App() {
   // Perform the actual save (image + mod files) — called after reconciliation or directly
   const performSave = useCallback(async () => {
     const engine = engineRef.current;
+    const pendingMap = pendingMapRef.current;
     if (!modPathRef.current || !engine || !engine.isLoaded()) return;
 
     try {
+      // 1. Flush pending provinces first
+      if (pendingMap.count > 0) {
+        setStatus('Reconciling pending province IDs...');
+
+        // Find max committed (non-pending) ID
+        const allProvinces = registryRef.current.getAllProvinces();
+        let maxCommittedId = 0;
+        for (const p of allProvinces) {
+          if (!pendingMap.has(rgbToKey(p.color)) && p.id > maxCommittedId) {
+            maxCommittedId = p.id;
+          }
+        }
+
+        // Renumber pending IDs sequentially from maxCommittedId + 1
+        pendingMap.reconcileIds(maxCommittedId + 1);
+
+        // Update registry province objects to match reconciled IDs
+        for (const entry of pendingMap.getAll()) {
+          const existing = registryRef.current.getProvinceByColor(entry.color);
+          if (existing) {
+            existing.id = entry.id;
+            existing.isNew = true;
+          }
+        }
+
+        setStatus(`Flushing ${pendingMap.count} pending provinces...`);
+        await window.mapPainter.flushPendingProvinces({
+          provinces: pendingMap.getAll(),
+          options: pendingSaveOptions,
+        });
+
+        pendingMap.clear();
+        setPendingCount(0);
+      }
+
+      // 2. Save map image
       setStatus('Saving provinces.png...');
       const rgbaBuffer = new Uint8Array(engine.stitchFullImage().buffer);
       const { width, height } = engine.getMapSize();
       await window.mapPainter.saveImage(modPathRef.current, rgbaBuffer, width, height);
 
+      // 3. Save mod files
       setStatus('Saving mod files...');
       const provinces = registryRef.current.getAllProvinces();
       await window.mapPainter.saveMod({
@@ -314,7 +504,7 @@ export default function App() {
       const msg = err instanceof Error ? err.message : String(err);
       setStatus(`Save error: ${msg}`);
     }
-  }, [modifiedProvinceIds]);
+  }, [modifiedProvinceIds, pendingSaveOptions]);
 
   // Save everything: scan for orphans first, show reconciliation dialog if needed
   const handleSaveAll = useCallback(async () => {
@@ -325,10 +515,12 @@ export default function App() {
     }
 
     try {
-      // Scan the map for colors actually present
+      // Scan the map for ALL colors actually present — do NOT skip empty colors
+      // here because provinces may share a color with an empty color (e.g. black
+      // ocean provinces in definition.csv). Empty color filtering is only for
+      // paint tools, not for orphan detection.
       setStatus('Scanning map for orphaned provinces...');
-      const emptyColorKeys = new Set(emptyColors.map(c => rgbToKey(c)));
-      const usedColors = await engine.collectUsedColorsAsync(emptyColorKeys);
+      const usedColors = await engine.collectUsedColorsAsync(new Set());
 
       // Detect orphans
       const allProvinces = registryRef.current.getAllProvinces();
@@ -349,7 +541,7 @@ export default function App() {
       const msg = err instanceof Error ? err.message : String(err);
       setStatus(`Save error: ${msg}`);
     }
-  }, [emptyColors, landedTitles, performSave]);
+  }, [landedTitles, performSave]);
 
   // Reconciliation: user confirmed removal
   const handleReconcileConfirm = useCallback(async (
@@ -413,25 +605,45 @@ export default function App() {
     setStatus('Save cancelled — orphaned provinces detected');
   }, []);
 
-  // Creator: create new province
+  // Creator: create new province (deferred — no IPC, just pending map + registry)
   const handleCreateProvince = useCallback(async (request: CreateProvinceRequest): Promise<ProvinceData | null> => {
     try {
-      setStatus(`Creating province "${request.name}"...`);
-      const province = await window.mapPainter.createProvince(request) as ProvinceData;
+      const registry = registryRef.current;
+      const pendingMap = pendingMapRef.current;
 
-      // Add to color registry (ID already assigned by backend)
-      registryRef.current.addProvince(province);
-      setProvinceCount(registryRef.current.count);
+      // registerProvince assigns nextId++ and adds to registry
+      const province = registry.registerProvince({
+        color: request.color,
+        name: request.name,
+        titleTier: request.titleTier,
+        culture: request.culture,
+        religion: request.religion,
+        holding: request.holding,
+        terrain: request.terrain,
+        historyFile: request.historyFile,
+      });
+
+      // Add to pending map for deferred file writes
+      const pendingEntry: PendingProvince = {
+        id: province.id,
+        color: province.color,
+        name: province.name,
+        request,
+      };
+      pendingMap.add(pendingEntry);
+
+      setProvinceCount(registry.count);
+      setPendingCount(pendingMap.count);
 
       // Suggest a new unique color for the next province
       try {
-        const suggested = registryRef.current.suggestNextColor();
+        const suggested = registry.suggestNextColor();
         handleColorChange(suggested);
       } catch {
         // Exhausted colors, unlikely
       }
 
-      setStatus(`Created province #${province.id}: ${province.name}`);
+      setStatus(`Pending province #${province.id}: ${province.name}`);
       forceUpdate(n => n + 1);
       return province;
     } catch (err) {
@@ -440,6 +652,132 @@ export default function App() {
       return null;
     }
   }, [handleColorChange]);
+
+  /** Remove a single pending province from the pending map + registry (manual delete from tab) */
+  const handleRemovePending = useCallback((colorKey: string) => {
+    const pendingMap = pendingMapRef.current;
+    const entry = pendingMap.get(colorKey);
+    if (!entry) return;
+
+    pendingMap.remove(colorKey);
+    registryRef.current.removeProvince(entry.id);
+    setPendingCount(pendingMap.count);
+    setProvinceCount(registryRef.current.count);
+    setStatus(`Removed pending province #${entry.id}: ${entry.name}`);
+  }, []);
+
+  /** Pending orphan dialog — user confirmed removal of selected orphans */
+  const handlePendingOrphanConfirm = useCallback((removedColorKeys: string[]) => {
+    const pendingMap = pendingMapRef.current;
+    const removed: PendingProvince[] = [];
+
+    for (const key of removedColorKeys) {
+      const entry = pendingMap.get(key);
+      if (entry) {
+        pendingMap.remove(key);
+        registryRef.current.removeProvince(entry.id);
+        removed.push(entry);
+      }
+    }
+
+    // Patch the most recent undo action with pendingRemoved so undo can restore them
+    if (removed.length > 0) {
+      const lastAction = toolManagerRef.current?.getLastUndoAction();
+      if (lastAction) {
+        lastAction.pendingRemoved = [
+          ...(lastAction.pendingRemoved ?? []),
+          ...removed,
+        ];
+      }
+    }
+
+    setPendingCount(pendingMap.count);
+    setProvinceCount(registryRef.current.count);
+    setShowPendingOrphanDialog(false);
+    setPendingOrphans([]);
+    setStatus(`Removed ${removed.length} orphaned pending province(s)`);
+  }, []);
+
+  /** Pending orphan dialog — user chose to keep all */
+  const handlePendingOrphanCancel = useCallback(() => {
+    setShowPendingOrphanDialog(false);
+    setPendingOrphans([]);
+  }, []);
+
+  /** Navigate to Create tab to edit a pending province's details */
+  const handleEditPending = useCallback((colorKey: string) => {
+    setEditingPendingKey(colorKey);
+    setSidebarMode('creator');
+  }, []);
+
+  /** Update a pending province's details (from Create tab in edit mode) */
+  const handleUpdatePending = useCallback((colorKey: string, request: CreateProvinceRequest) => {
+    const pendingMap = pendingMapRef.current;
+    const entry = pendingMap.get(colorKey);
+    if (!entry) return;
+
+    // Update pending entry
+    entry.name = request.name;
+    entry.request = request;
+
+    // Update registry province data to stay in sync
+    const province = registryRef.current.getProvinceByColor(entry.color);
+    if (province) {
+      province.name = request.name;
+      province.culture = request.culture;
+      province.religion = request.religion;
+      province.holding = request.holding;
+      province.terrain = request.terrain;
+      province.titleTier = request.titleTier;
+      province.historyFile = request.historyFile;
+    }
+
+    setEditingPendingKey(null);
+    setStatus(`Updated pending province #${entry.id}: ${request.name}`);
+    forceUpdate(n => n + 1);
+  }, []);
+
+  /** Flush pending provinces only (from the Pending tab "Save All" button) */
+  const handleFlushPendingSave = useCallback(async () => {
+    const pendingMap = pendingMapRef.current;
+    if (pendingMap.count === 0 || !modPathRef.current) return;
+
+    try {
+      // Reconcile IDs
+      const allProvinces = registryRef.current.getAllProvinces();
+      let maxCommittedId = 0;
+      for (const p of allProvinces) {
+        if (!pendingMap.has(rgbToKey(p.color)) && p.id > maxCommittedId) {
+          maxCommittedId = p.id;
+        }
+      }
+
+      pendingMap.reconcileIds(maxCommittedId + 1);
+
+      // Update registry province objects to match reconciled IDs
+      for (const entry of pendingMap.getAll()) {
+        const existing = registryRef.current.getProvinceByColor(entry.color);
+        if (existing) {
+          existing.id = entry.id;
+          existing.isNew = true;
+        }
+      }
+
+      setStatus(`Flushing ${pendingMap.count} pending provinces...`);
+      await window.mapPainter.flushPendingProvinces({
+        provinces: pendingMap.getAll(),
+        options: pendingSaveOptions,
+      });
+
+      const count = pendingMap.count;
+      pendingMap.clear();
+      setPendingCount(0);
+      setStatus(`Saved ${count} pending province(s) to mod files`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setStatus(`Flush error: ${msg}`);
+    }
+  }, [pendingSaveOptions]);
 
   const handleOpenMap = useCallback(async () => {
     if (loading) return;
@@ -505,6 +843,10 @@ export default function App() {
       setModDirty(false);
       setModifiedProvinceIds(new Set());
       setSelectedProvince(null);
+
+      // Clear pending map for new mod
+      pendingMapRef.current.clear();
+      setPendingCount(0);
 
       // Fetch history file list for the Advanced wizard
       try {
@@ -607,6 +949,7 @@ export default function App() {
     { key: 'painting', label: 'Paint' },
     { key: 'inspector', label: `Inspect${modDirty ? ' *' : ''}` },
     { key: 'creator', label: 'Create' },
+    { key: 'pending', label: `Pending${pendingCount > 0 ? ` (${pendingCount})` : ''}` },
   ];
   const activeTabIndex = tabs.findIndex(t => t.key === sidebarMode);
 
@@ -806,6 +1149,21 @@ export default function App() {
                 onCreate={handleCreateProvince}
                 modLoaded={modLoaded}
                 historyFiles={historyFiles}
+                editingProvince={editingPendingKey ? pendingMapRef.current.get(editingPendingKey) ?? null : null}
+                onUpdate={handleUpdatePending}
+                onCancelEdit={() => setEditingPendingKey(null)}
+              />
+            </div>
+
+            <div style={{ display: sidebarMode === 'pending' ? 'block' : 'none' }}>
+              <PendingProvinces
+                pendingMap={pendingMapRef.current}
+                onRemove={handleRemovePending}
+                onEdit={handleEditPending}
+                saveOptions={pendingSaveOptions}
+                onSaveOptionsChange={setPendingSaveOptions}
+                onFlushSave={handleFlushPendingSave}
+                modLoaded={modLoaded}
               />
             </div>
           </div>
@@ -827,6 +1185,14 @@ export default function App() {
           orphanedParents={reconcileParents}
           onConfirm={handleReconcileConfirm}
           onCancel={handleReconcileCancel}
+        />
+      )}
+
+      {showPendingOrphanDialog && pendingOrphans.length > 0 && (
+        <PendingOrphanDialog
+          orphanedEntries={pendingOrphans}
+          onConfirm={handlePendingOrphanConfirm}
+          onCancel={handlePendingOrphanCancel}
         />
       )}
     </div>

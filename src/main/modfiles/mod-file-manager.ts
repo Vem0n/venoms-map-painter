@@ -6,12 +6,12 @@
  * All operations are save-triggered (not live sync).
  *
  * Backup-before-write: before any save, copies affected files to
- * /backups/{timestamp}/ so nothing is permanently lost.
+ * /VMP-Backups/{operation}_{timestamp}/ so nothing is permanently lost.
  */
 
 import path from 'path';
 import fs from 'fs/promises';
-import { ProvinceData, ModData, LoadModResult, CreateProvinceRequest, LandedTitleNode, ReconcileRequest } from '@shared/types';
+import { ProvinceData, ModData, LoadModResult, CreateProvinceRequest, LandedTitleNode, ReconcileRequest, PendingProvince, PendingSaveOptions } from '@shared/types';
 import { parseDefinitionCsv, writeDefinitionCsv } from './definition-csv';
 import {
   parseLandedTitles,
@@ -112,7 +112,7 @@ export class ModFileManager {
   }): Promise<void> {
     // 1. Create timestamped backup directory
     const stamp = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 19);
-    const backupDir = path.join(this.modPath, 'backups', stamp);
+    const backupDir = path.join(this.modPath, 'VMP-Backups', `save_${stamp}`);
     await fs.mkdir(backupDir, { recursive: true });
 
     // 2. Backup and write definition.csv
@@ -207,105 +207,194 @@ export class ModFileManager {
     if (request.parentTitle) {
       const baronyKey = `b_${request.name.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
       province.titleKey = baronyKey;
-
-      const titlesDir = path.join(this.modPath, 'common', 'landed_titles');
-      let files: string[];
-      try {
-        files = await fs.readdir(titlesDir);
-      } catch {
-        files = [];
-      }
-
-      if (request.createCounty) {
-        // Create a NEW county containing the barony
-        const countyKey = request.parentTitle; // e.g. c_my_county
-        const indent = request.parentDuchy ? getChildIndent(request.parentDuchy) : '\t\t';
-        const block = generateCountyStub(countyKey, baronyKey, newId, request.color, indent);
-
-        let inserted = false;
-        if (request.parentDuchy) {
-          // Insert the new county under the specified duchy
-          for (const file of files) {
-            if (!file.endsWith('.txt')) continue;
-            const filePath = path.join(titlesDir, file);
-            const content = await fs.readFile(filePath, 'utf-8');
-            if (content.includes(request.parentDuchy)) {
-              inserted = await appendToTitleFile(filePath, request.parentDuchy, block);
-              if (inserted) break;
-            }
-          }
-        }
-
-        if (!inserted) {
-          // No parent duchy or duchy not found — append to first .txt file (or create one)
-          const targetFile = files.find(f => f.endsWith('.txt'));
-          const filePath = targetFile
-            ? path.join(titlesDir, targetFile)
-            : path.join(titlesDir, '00_landed_titles.txt');
-
-          if (!targetFile) {
-            await fs.mkdir(titlesDir, { recursive: true });
-            await fs.writeFile(filePath, '', 'utf-8');
-          }
-
-          const eol = '\n';
-          await fs.appendFile(filePath, eol + block + eol, 'utf-8');
-          inserted = true;
-        }
-
-        // Update in-memory title tree
-        if (inserted) {
-          const baronyNode: LandedTitleNode = {
-            key: baronyKey,
-            tier: 'b',
-            provinceId: newId,
-            children: [],
-          };
-          const countyNode: LandedTitleNode = {
-            key: countyKey,
-            tier: 'c',
-            children: [baronyNode],
-          };
-
-          if (request.parentDuchy) {
-            insertTitle(this.landedTitles, request.parentDuchy, countyNode);
-          } else {
-            // Top-level county (no duchy parent)
-            this.landedTitles.push(countyNode);
-          }
-          this.titleIndex = buildTitleIndex(this.landedTitles);
-        }
-      } else {
-        // Add barony under existing county
-        let inserted = false;
-        for (const file of files) {
-          if (!file.endsWith('.txt')) continue;
-          const filePath = path.join(titlesDir, file);
-          const content = await fs.readFile(filePath, 'utf-8');
-          if (content.includes(request.parentTitle)) {
-            const indent = getChildIndent(request.parentTitle);
-            const block = generateBaronyBlock(baronyKey, newId, indent);
-            inserted = await appendToTitleFile(filePath, request.parentTitle, block);
-            if (inserted) break;
-          }
-        }
-
-        // Update in-memory title tree
-        if (inserted) {
-          const newTitle: LandedTitleNode = {
-            key: baronyKey,
-            tier: 'b',
-            provinceId: newId,
-            children: [],
-          };
-          insertTitle(this.landedTitles, request.parentTitle, newTitle);
-          this.titleIndex = buildTitleIndex(this.landedTitles);
-        }
-      }
+      await this.insertLandedTitle(request, baronyKey, newId);
     }
 
     this.provinces.push(province);
     return province;
+  }
+
+  /**
+   * Flush a batch of pending provinces to disk.
+   * Called at save time to write deferred province entries.
+   */
+  async flushPendingProvinces(pending: PendingProvince[], options: PendingSaveOptions): Promise<void> {
+    if (pending.length === 0) return;
+
+    // 1. definition.csv — batch append
+    if (options.definitionCsv) {
+      const defPath = path.join(this.modPath, 'map_data', 'definition.csv');
+      const existing = await fs.readFile(defPath, 'utf-8');
+      const needsNewline = existing.length > 0 && !existing.endsWith('\n') && !existing.endsWith('\r\n');
+
+      const lines = pending.map(p =>
+        `${p.id};${p.color.r};${p.color.g};${p.color.b};${p.name};x;`
+      );
+      const block = (needsNewline ? '\n' : '') + lines.join('\n') + '\n';
+      await fs.appendFile(defPath, block, 'utf-8');
+    }
+
+    // 2. History stubs
+    if (options.historyStubs) {
+      const histDir = path.join(this.modPath, 'history', 'provinces');
+      for (const p of pending) {
+        const province: ProvinceData = {
+          id: p.id,
+          color: p.color,
+          name: p.name,
+          culture: p.request.culture,
+          religion: p.request.religion,
+          holding: p.request.holding,
+          terrain: p.request.terrain,
+          historyFile: p.request.historyFile,
+          isNew: true,
+        };
+        await generateProvinceStub(histDir, province);
+      }
+    }
+
+    // 3. Terrain entries — batch
+    if (options.terrainEntries) {
+      const withTerrain = pending
+        .filter(p => p.request.terrain)
+        .map(p => ({
+          id: p.id,
+          color: p.color,
+          name: p.name,
+          terrain: p.request.terrain,
+          isNew: true,
+        } as ProvinceData));
+      if (withTerrain.length > 0) {
+        await saveProvinceTerrain(this.modPath, withTerrain);
+      }
+    }
+
+    // 4. Landed titles
+    if (options.landedTitles) {
+      for (const p of pending) {
+        if (!p.request.parentTitle) continue;
+        const baronyKey = `b_${p.name.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+        await this.insertLandedTitle(p.request, baronyKey, p.id);
+      }
+    }
+
+    // Update internal province list
+    for (const p of pending) {
+      this.provinces.push({
+        id: p.id,
+        color: p.color,
+        name: p.name,
+        titleTier: p.request.titleTier,
+        culture: p.request.culture,
+        religion: p.request.religion,
+        holding: p.request.holding,
+        terrain: p.request.terrain,
+        historyFile: p.request.historyFile,
+        isNew: true,
+      });
+    }
+  }
+
+  /**
+   * Insert a barony (and optionally a new county) into the landed_titles files.
+   * Shared by createProvinceStubs() and flushPendingProvinces().
+   */
+  private async insertLandedTitle(
+    request: CreateProvinceRequest,
+    baronyKey: string,
+    provinceId: number,
+  ): Promise<void> {
+    if (!request.parentTitle) return;
+
+    const titlesDir = path.join(this.modPath, 'common', 'landed_titles');
+    let files: string[];
+    try {
+      files = await fs.readdir(titlesDir);
+    } catch {
+      files = [];
+    }
+
+    if (request.createCounty) {
+      // Create a NEW county containing the barony
+      const countyKey = request.parentTitle; // e.g. c_my_county
+      const indent = request.parentDuchy ? getChildIndent(request.parentDuchy) : '\t\t';
+      const block = generateCountyStub(countyKey, baronyKey, provinceId, request.color, indent);
+
+      let inserted = false;
+      if (request.parentDuchy) {
+        for (const file of files) {
+          if (!file.endsWith('.txt')) continue;
+          const filePath = path.join(titlesDir, file);
+          const content = await fs.readFile(filePath, 'utf-8');
+          if (content.includes(request.parentDuchy)) {
+            inserted = await appendToTitleFile(filePath, request.parentDuchy, block);
+            if (inserted) break;
+          }
+        }
+      }
+
+      if (!inserted) {
+        const targetFile = files.find(f => f.endsWith('.txt'));
+        const filePath = targetFile
+          ? path.join(titlesDir, targetFile)
+          : path.join(titlesDir, '00_landed_titles.txt');
+
+        if (!targetFile) {
+          await fs.mkdir(titlesDir, { recursive: true });
+          await fs.writeFile(filePath, '', 'utf-8');
+        }
+
+        const eol = '\n';
+        await fs.appendFile(filePath, eol + block + eol, 'utf-8');
+        inserted = true;
+      }
+
+      if (inserted) {
+        const baronyNode: LandedTitleNode = {
+          key: baronyKey,
+          tier: 'b',
+          provinceId,
+          children: [],
+        };
+        const countyNode: LandedTitleNode = {
+          key: countyKey,
+          tier: 'c',
+          children: [baronyNode],
+        };
+
+        if (request.parentDuchy) {
+          insertTitle(this.landedTitles, request.parentDuchy, countyNode);
+        } else {
+          this.landedTitles.push(countyNode);
+        }
+        this.titleIndex = buildTitleIndex(this.landedTitles);
+      }
+    } else {
+      // Add barony under existing county
+      let inserted = false;
+      for (const file of files) {
+        if (!file.endsWith('.txt')) continue;
+        const filePath = path.join(titlesDir, file);
+        const content = await fs.readFile(filePath, 'utf-8');
+        if (content.includes(request.parentTitle)) {
+          const indent = getChildIndent(request.parentTitle);
+          const block = generateBaronyBlock(baronyKey, provinceId, indent);
+          inserted = await appendToTitleFile(filePath, request.parentTitle, block);
+          if (inserted) break;
+        }
+      }
+
+      if (inserted) {
+        const newTitle: LandedTitleNode = {
+          key: baronyKey,
+          tier: 'b',
+          provinceId,
+          children: [],
+        };
+        insertTitle(this.landedTitles, request.parentTitle, newTitle);
+        this.titleIndex = buildTitleIndex(this.landedTitles);
+      }
+    }
   }
 
   /**
@@ -349,7 +438,7 @@ export class ModFileManager {
 
     // 1. Create timestamped backup directory
     const stamp = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 19);
-    const backupDir = path.join(this.modPath, 'backups', `reconcile_${stamp}`);
+    const backupDir = path.join(this.modPath, 'VMP-Backups', `reconcile_${stamp}`);
     await fs.mkdir(backupDir, { recursive: true });
 
     // 2. Backup affected files

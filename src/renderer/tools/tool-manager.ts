@@ -27,6 +27,8 @@ export interface PaintEvent {
   pixelCount: number;
   /** Warning message if color validation produced a non-blocking warning */
   warning?: string;
+  /** If a brand-new color was auto-registered during this paint */
+  newProvince?: { id: number; color: RGB; name: string };
 }
 
 export class ToolManager {
@@ -156,6 +158,27 @@ export class ToolManager {
     return { r: 0, g: 0, b: 0 };
   }
 
+  /**
+   * If the color is unregistered (and not an empty color), auto-register it
+   * as a new province in the ColorRegistry with a default name.
+   * Returns the new province info, or undefined if already registered.
+   */
+  private maybeAutoRegister(color: RGB): { id: number; color: RGB; name: string } | undefined {
+    if (this.isEmptyColor(color)) return undefined;
+    if (this.registry.isColorUsed(color)) return undefined;
+
+    const province = this.registry.registerProvince({
+      color,
+      name: 'Uninitiated',
+      titleTier: 'b',
+    });
+
+    const defaultName = `Province ${province.id}`;
+    province.name = defaultName;
+
+    return { id: province.id, color: province.color, name: defaultName };
+  }
+
   /** Set a callback for paint events (pixel counts, warnings) */
   setOnPaintEvent(cb: (event: PaintEvent) => void): void {
     this.onPaintEvent = cb;
@@ -274,7 +297,10 @@ export class ToolManager {
     this.dragAffectedTiles.clear();
     this.dragBeforeSnapshots.clear();
 
-    const event: PaintEvent = { tool: this.activeTool, pixelCount: -1 };
+    const newProvince = this.activeTool !== 'eraser'
+      ? this.maybeAutoRegister(this.activeColor)
+      : undefined;
+    const event: PaintEvent = { tool: this.activeTool, pixelCount: -1, newProvince };
     this.onPaintEvent?.(event);
     return event;
   }
@@ -286,10 +312,11 @@ export class ToolManager {
 
   /**
    * Undo the last action, restoring tile snapshots.
+   * Returns the action so the caller can read pending province snapshot fields.
    */
-  undo(): boolean {
+  undo(): UndoAction | null {
     const action = this.undoManager.undo();
-    if (!action) return false;
+    if (!action) return null;
 
     for (const tileIndex of action.tileIndices) {
       const snapshot = action.beforeSnapshots.get(tileIndex);
@@ -297,15 +324,16 @@ export class ToolManager {
         this.engine.restoreTile(tileIndex, snapshot);
       }
     }
-    return true;
+    return action;
   }
 
   /**
    * Redo the last undone action.
+   * Returns the action so the caller can read pending province snapshot fields.
    */
-  redo(): boolean {
+  redo(): UndoAction | null {
     const action = this.undoManager.redo();
-    if (!action) return false;
+    if (!action) return null;
 
     for (const tileIndex of action.tileIndices) {
       const snapshot = action.afterSnapshots.get(tileIndex);
@@ -313,7 +341,12 @@ export class ToolManager {
         this.engine.restoreTile(tileIndex, snapshot);
       }
     }
-    return true;
+    return action;
+  }
+
+  /** Get the most recent action on the undo stack (for patching pending province data). */
+  getLastUndoAction(): UndoAction | undefined {
+    return this.undoManager.peekUndo();
   }
 
   get canUndo(): boolean {
@@ -368,7 +401,8 @@ export class ToolManager {
     };
     this.undoManager.push(action);
 
-    const event: PaintEvent = { tool: 'flood-fill', pixelCount: result.pixelCount, warning };
+    const newProvince = this.maybeAutoRegister(this.activeColor);
+    const event: PaintEvent = { tool: 'flood-fill', pixelCount: result.pixelCount, warning, newProvince };
     this.onPaintEvent?.(event);
     return event;
   }
@@ -397,7 +431,8 @@ export class ToolManager {
     };
     this.undoManager.push(action);
 
-    const event: PaintEvent = { tool: 'brush', pixelCount: result.pixelCount, warning };
+    const newProvince = this.maybeAutoRegister(this.activeColor);
+    const event: PaintEvent = { tool: 'brush', pixelCount: result.pixelCount, warning, newProvince };
     this.onPaintEvent?.(event);
     return event;
   }

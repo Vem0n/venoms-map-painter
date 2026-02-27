@@ -12,7 +12,8 @@
  */
 
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
-import type { RGB, ProvinceData, CreateProvinceRequest, LandedTitleNode } from '@shared/types';
+import type { RGB, ProvinceData, CreateProvinceRequest, LandedTitleNode, PendingProvince } from '@shared/types';
+import { rgbToKey } from '@shared/types';
 import { theme, inputStyle as themeInputStyle, labelStyle as themeLabelStyle, selectStyle, sectionHeading, dividerStyle, cardStyle } from '../theme';
 import { ChevronDownIcon } from './icons';
 
@@ -34,6 +35,12 @@ interface ProvinceCreatorProps {
   modLoaded: boolean;
   /** List of existing history files in the mod */
   historyFiles: string[];
+  /** When set, the form edits this existing pending province instead of creating a new one */
+  editingProvince?: PendingProvince | null;
+  /** Callback to update a pending province's details */
+  onUpdate?: (colorKey: string, request: CreateProvinceRequest) => void;
+  /** Callback to cancel editing */
+  onCancelEdit?: () => void;
 }
 
 const fieldRowStyle: React.CSSProperties = {
@@ -48,6 +55,9 @@ export default function ProvinceCreator({
   onCreate,
   modLoaded,
   historyFiles,
+  editingProvince,
+  onUpdate,
+  onCancelEdit,
 }: ProvinceCreatorProps) {
   const [name, setName] = useState('');
   const [countyMode, setCountyMode] = useState<CountyMode>('existing');
@@ -145,14 +155,38 @@ export default function ProvinceCreator({
     }
   }, [name, countyMode, newCountyKey]);
 
-  const handleCreate = useCallback(async () => {
+  // Pre-populate form when editing an existing pending province
+  useEffect(() => {
+    if (!editingProvince) return;
+    const req = editingProvince.request;
+    setName(req.name || '');
+    setCulture(req.culture || '');
+    setReligion(req.religion || '');
+    setHolding(req.holding || 'castle_holding');
+    setTerrain(req.terrain || 'plains');
+    setSelectedHistoryFile(req.historyFile || '');
+    if (req.createCounty && req.parentTitle) {
+      setCountyMode('new');
+      setNewCountyKey(req.parentTitle);
+      setParentDuchy(req.parentDuchy || '');
+    } else if (req.parentTitle) {
+      setCountyMode('existing');
+      setParentTitle(req.parentTitle);
+    } else {
+      setCountyMode('existing');
+      setParentTitle('');
+    }
+  }, [editingProvince]);
+
+  const isEditing = !!editingProvince;
+  const displayColor = isEditing ? editingProvince.color : activeColor;
+
+  const handleSubmit = useCallback(async () => {
     if (!name.trim()) return;
-    setCreating(true);
-    setLastCreated(null);
 
     const request: CreateProvinceRequest = {
       name: name.trim(),
-      color: activeColor,
+      color: displayColor,
       titleTier: 'b',
       culture: culture || undefined,
       religion: religion || undefined,
@@ -170,15 +204,23 @@ export default function ProvinceCreator({
       request.parentDuchy = parentDuchy || undefined;
     }
 
-    const result = await onCreate(request);
-    setCreating(false);
-
-    if (result) {
-      setLastCreated(`Created province #${result.id}: ${result.name}`);
-      setName('');
-      setNewCountyKey('');
+    if (isEditing && onUpdate) {
+      // Update existing pending province
+      onUpdate(rgbToKey(editingProvince!.color), request);
+      setLastCreated(`Updated province #${editingProvince!.id}: ${request.name}`);
+    } else {
+      // Create new province
+      setCreating(true);
+      setLastCreated(null);
+      const result = await onCreate(request);
+      setCreating(false);
+      if (result) {
+        setLastCreated(`Created province #${result.id}: ${result.name}`);
+        setName('');
+        setNewCountyKey('');
+      }
     }
-  }, [name, activeColor, countyMode, parentTitle, newCountyKey, parentDuchy, culture, religion, holding, terrain, selectedHistoryFile, onCreate]);
+  }, [name, displayColor, countyMode, parentTitle, newCountyKey, parentDuchy, culture, religion, holding, terrain, selectedHistoryFile, onCreate, isEditing, onUpdate, editingProvince]);
 
   if (!modLoaded) {
     return (
@@ -201,11 +243,13 @@ export default function ProvinceCreator({
     zIndex: 10,
   };
 
-  const canCreate = name.trim().length > 0;
+  const canSubmit = name.trim().length > 0;
 
   return (
     <div>
-      <h3 style={sectionHeading()}>Create Province</h3>
+      <h3 style={sectionHeading()}>
+        {isEditing ? `Edit Province #${editingProvince!.id}` : 'Create Province'}
+      </h3>
 
       {/* Color preview */}
       <div style={{
@@ -218,14 +262,16 @@ export default function ProvinceCreator({
         <div style={{
           width: 20, height: 20, borderRadius: theme.radius.sm,
           border: `2px solid ${theme.border.default}`,
-          background: `rgb(${activeColor.r},${activeColor.g},${activeColor.b})`,
+          background: `rgb(${displayColor.r},${displayColor.g},${displayColor.b})`,
           flexShrink: 0,
         }} />
         <div>
           <div style={{ color: theme.text.secondary, fontSize: theme.font.sizeSm, fontFamily: theme.font.mono }}>
-            ({activeColor.r}, {activeColor.g}, {activeColor.b})
+            ({displayColor.r}, {displayColor.g}, {displayColor.b})
           </div>
-          <div style={{ color: theme.text.muted, fontSize: theme.font.sizeXs }}>Paint pixels first, then create</div>
+          <div style={{ color: theme.text.muted, fontSize: theme.font.sizeXs }}>
+            {isEditing ? 'Editing pending province' : 'Paint pixels first, then create'}
+          </div>
         </div>
       </div>
 
@@ -516,26 +562,48 @@ export default function ProvinceCreator({
         )}
       </div>
 
-      {/* Create button */}
+      {/* Submit button */}
       <button
-        onClick={handleCreate}
-        disabled={creating || !canCreate}
+        onClick={handleSubmit}
+        disabled={creating || !canSubmit}
         style={{
           width: '100%',
           padding: '8px 12px',
-          background: canCreate ? theme.accent.green : theme.bg.surface,
-          color: canCreate ? '#fff' : theme.text.muted,
-          border: `1px solid ${canCreate ? theme.accent.green : theme.border.default}`,
+          background: canSubmit ? theme.accent.green : theme.bg.surface,
+          color: canSubmit ? '#fff' : theme.text.muted,
+          border: `1px solid ${canSubmit ? theme.accent.green : theme.border.default}`,
           borderRadius: theme.radius.sm,
-          cursor: canCreate ? 'pointer' : 'default',
+          cursor: canSubmit ? 'pointer' : 'default',
           fontSize: theme.font.sizeLg,
           fontFamily: theme.font.family,
           fontWeight: 600,
           transition: theme.transition.fast,
         }}
       >
-        {creating ? 'Creating...' : 'Create Province'}
+        {creating ? 'Creating...' : isEditing ? 'Update Province' : 'Create Province'}
       </button>
+
+      {isEditing && onCancelEdit && (
+        <button
+          onClick={onCancelEdit}
+          style={{
+            width: '100%',
+            padding: '6px 12px',
+            marginTop: 6,
+            background: 'transparent',
+            color: theme.text.muted,
+            border: `1px solid ${theme.border.default}`,
+            borderRadius: theme.radius.sm,
+            cursor: 'pointer',
+            fontSize: theme.font.sizeMd,
+            fontFamily: theme.font.family,
+            fontWeight: 500,
+            transition: theme.transition.fast,
+          }}
+        >
+          Cancel Edit
+        </button>
+      )}
 
       {lastCreated && (
         <div style={{ color: theme.accent.green, fontSize: theme.font.sizeSm, marginTop: 6 }}>
@@ -546,8 +614,9 @@ export default function ProvinceCreator({
       {/* Info */}
       <div style={dividerStyle()} />
       <div style={{ color: theme.text.muted, fontSize: theme.font.sizeXs }}>
-        Creates: definition.csv row, history stub, terrain entry, and barony in landed_titles.
-        IDs are sequential — the wiki says non-sequential IDs cause CTD.
+        {isEditing
+          ? 'Updates the pending province details. Files are written on save.'
+          : 'Provinces are auto-registered when you paint with a new color. Use this form to fill in details or create a province before painting.'}
       </div>
     </div>
   );

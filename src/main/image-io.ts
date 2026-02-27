@@ -42,10 +42,15 @@ export async function loadPng(filePath: string): Promise<LoadResult> {
     `map-painter-${Date.now()}-${Math.random().toString(36).slice(2)}.raw`,
   );
 
+  // Resolve sharp's path from the main process so the worker doesn't rely on
+  // CWD-based module resolution (which breaks when the packaged app is run
+  // from a different directory than where it's installed).
+  const sharpPath = require.resolve('sharp');
+
   const meta = await new Promise<{ width: number; height: number }>((resolve, reject) => {
     const workerCode = `
       const { parentPort, workerData } = require('worker_threads');
-      const sharp = require('sharp');
+      const sharp = require(${JSON.stringify(sharpPath)});
       const fs = require('fs');
       sharp.cache(false);
       sharp.concurrency(1);
@@ -103,7 +108,7 @@ export async function loadPng(filePath: string): Promise<LoadResult> {
 
 /**
  * Save a raw RGBA buffer as a PNG file.
- * Creates a backup of the existing file first.
+ * Backup is handled by the caller (VMP-Backups/).
  */
 export async function savePng(
   filePath: string,
@@ -111,14 +116,6 @@ export async function savePng(
   width: number,
   height: number,
 ): Promise<void> {
-  // Backup existing file
-  try {
-    await fs.access(filePath);
-    await fs.copyFile(filePath, `${filePath}.bak`);
-  } catch {
-    // File doesn't exist yet, no backup needed
-  }
-
   // CK3 requires 24-bit RGB PNG (no alpha). Saving as RGBA (32-bit) causes CTD.
   // Strip the alpha channel before encoding.
   await sharp(Buffer.from(rgbaBuffer), {

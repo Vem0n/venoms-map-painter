@@ -149,11 +149,12 @@ export default function ReconcileDialog({
         <div style={footerStyle}>
           <button style={cancelBtnStyle} onClick={onCancel}>Cancel</button>
           <button
-            style={removeCount > 0 ? confirmBtnStyle : confirmBtnDisabledStyle}
+            style={removeCount > 0 ? confirmBtnStyle : saveBtnStyle}
             onClick={handleConfirm}
-            disabled={removeCount === 0}
           >
-            Remove & Renumber ({removeCount})
+            {removeCount > 0
+              ? `Remove & Renumber (${removeCount})`
+              : 'Save Without Changes'}
           </button>
         </div>
       </div>
@@ -342,9 +343,8 @@ const confirmBtnStyle: React.CSSProperties = {
   color: '#fff',
 };
 
-const confirmBtnDisabledStyle: React.CSSProperties = {
+const saveBtnStyle: React.CSSProperties = {
   ...baseBtnStyle,
-  backgroundColor: theme.bg.elevated,
-  color: theme.text.muted,
-  cursor: 'not-allowed',
+  backgroundColor: theme.accent.green,
+  color: '#fff',
 };
