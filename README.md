@@ -127,6 +127,8 @@ Output goes to `release/`. Builds for Windows (NSIS + portable), macOS (DMG + ZI
 
 - **Mass Edit** — Select multiple provinces at once — existing or newly created — and batch update their parent title, culture, religion, or holding type in a single operation. Paint an entire region first, assign the hierarchy later.
 
+- **Other Tool Compatibility** — Looking into optimizing data creation times to ensure compatibility with other tools like Xorrad's meckt, VMP's main focus is province painting, never ever do I want to lock you into this app as your sole workflow, pick your own arsenal, and I want to help you with doing that painlessly.
+
 ---
 
 ## Contributing
