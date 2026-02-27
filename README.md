@@ -131,6 +131,8 @@ Output goes to `release/`. Builds for Windows (NSIS + portable), macOS (DMG + ZI
 
 - ~~**Other Tool Compatibility** — Looking into optimizing data creation times to ensure compatibility with other tools like Xorrad's meckt, VMP's main focus is province painting, never ever do I want to lock you into this app as your sole workflow, pick your own arsenal, and I want to help you with doing that painlessly.~~ - **Implemented**, IDs are now assigned at paint time with the option to only write the definitions.csv entry
 
+- **Auto Divide** - Paint a blob on the map, select it, specify the amount of provinces you want to divide it into, watch a live (possibly) preview, accept, receive auto generated provinces to be adjusted manually, will use Voronoi diagram seeding (most likely).
+
 ---
 
 ## Contributing
