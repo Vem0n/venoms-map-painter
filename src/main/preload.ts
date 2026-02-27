@@ -38,6 +38,9 @@ const api = {
   listHistoryFiles: (): Promise<string[]> =>
     ipcRenderer.invoke('list-history-files'),
 
+  flushPendingProvinces: (data: unknown): Promise<void> =>
+    ipcRenderer.invoke('flush-pending-provinces', data),
+
   reconcileProvinces: (data: unknown): Promise<void> =>
     ipcRenderer.invoke('reconcile-provinces', data),
 };

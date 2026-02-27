@@ -72,10 +72,7 @@ export async function writeDefinitionCsv(
     if (firstLine) headerLine = firstLine;
   } catch { /* no existing file */ }
 
-  // Backup first
-  try {
-    await fs.copyFile(filePath, `${filePath}.bak`);
-  } catch { /* no existing file */ }
+  // Backup is handled by the caller (VMP-Backups/)
 
   const lines = [headerLine];
   for (const p of provinces) {

@@ -8,11 +8,11 @@ Built with Electron, TypeScript, React, and raw WebGL2.
 
 ## What It Does
 
-The full 8192x4096 province map is loaded as GPU-backed tiles (512x512 each) and rendered with WebGL2. Only visible tiles are drawn, so panning and zooming stays smooth regardless of map size. All painting happens at pixel precision through a global coordinate system that works transparently across tile boundaries.
+The full province map is loaded as GPU-backed tiles (512x512 each) and rendered with WebGL2. Only visible tiles are drawn, so panning and zooming stays smooth regardless of map size. All painting happens at pixel precision through a global coordinate system that works transparently across tile boundaries.
 
-When you create a province, the tool assigns a sequential ID, writes a row to `definition.csv`, generates a `history/provinces/` file with your culture/religion/holding values, inserts a barony into `common/landed_titles/` under the county you choose (or creates a new county + barony pair), and adds a `common/province_terrain/` entry. You can also select existing provinces to inspect and edit their data inline — name, culture, religion, holding, terrain, and the full de jure hierarchy from barony up to empire.
+Provinces are auto-registered the moment you paint with a new color — IDs are assigned at paint time, so you can focus on painting first and fill in the details later. The **Pending** tab tracks every new province that hasn't been saved yet, showing which ones still need names, culture, religion, etc. You can edit any pending province inline before saving, or just save them as-is and flesh them out later in your text editor. When you do save, VMP writes a row to `definition.csv`, generates a `history/provinces/` file, inserts a barony into `common/landed_titles/`, and adds a `common/province_terrain/` entry. You can also select existing provinces to inspect and edit their data inline — name, culture, religion, holding, terrain, and the full de jure hierarchy from barony up to empire.
 
-Every save creates timestamped backups before touching any file. Province map backups go to `<mod>/map_backup/`, mod file backups go to `<mod>/backups/`, and individual files get `.bak` copies. The PNG pipeline is lossless — integer RGB throughout, no interpolation, no recompression artifacts on untouched pixels.
+Every save creates timestamped backups before touching any file. All backups go to a single `<mod>/VMP-Backups/` folder with timestamped subfolders that mirror your mod's directory structure, so you can always roll back any change. The PNG pipeline is lossless — integer RGB throughout, no interpolation, no recompression artifacts on untouched pixels.
 
 Additionally the app is ***stateless***, you can generate files here, change them, adjust them, go fishing with them, in any other application, this tool doesn't care, it just reads data and modifies relevant lines.
 
@@ -63,13 +63,15 @@ All tools live in the vertical toolbar on the left. Hover any icon for a tooltip
 
 ## Right Panel
 
-Three tabs that stay mounted across switches so you never lose form state:
+Four tabs that stay mounted across switches so you never lose form state:
 
 **Paint** — Color picker with RGB inputs, unique color suggestion, and a realm palette generator that produces 12 related hues from a base color. Province search with instant results that jump the camera on click. Live hover inspector showing the province under your cursor.
 
 **Inspect** — Select a province by clicking the map. Edit all fields inline: name, culture, religion, holding type, terrain. Browse date-stamped history overrides. View the full de jure hierarchy with color-coded tiers (barony, county, duchy, kingdom, empire). Double-click any title key to rename it.
 
-**Create** — Province creation wizard. Pick between nesting under an existing county or creating a new one (with optional parent duchy). Fill in name, holding, culture, religion, terrain, then hit Create. IDs are sequential — the CK3 wiki warns that gaps cause crashes. An **Advanced** collapsible section lets you pick an existing `history/provinces/` file to append the new province entry to instead of creating a new file per province.
+**Create** — Province creation wizard. Pick between nesting under an existing county or creating a new one (with optional parent duchy). Fill in name, holding, culture, religion, terrain, then hit Create. IDs are sequential — the CK3 wiki warns that gaps cause crashes. An **Advanced** collapsible section lets you pick an existing `history/provinces/` file to append the new province entry to instead of creating a new file per province. Also doubles as an editor for pending provinces — click the edit button on any pending province and the Create tab pre-fills with its data.
+
+**Pending** — Lists all provinces that have been painted but not yet saved to disk. Each entry shows a color swatch, ID, and name, with a "needs details" indicator for provinces that haven't been given a name, culture, or religion yet. Save options let you control which file stubs get generated (definition.csv, history, landed titles, terrain). Undo/redo fully syncs with the pending list — undoing a paint stroke that created a province removes it from pending, redo re-adds it.
 
 ---
 
@@ -127,7 +129,7 @@ Output goes to `release/`. Builds for Windows (NSIS + portable), macOS (DMG + ZI
 
 - **Mass Edit** — Select multiple provinces at once — existing or newly created — and batch update their parent title, culture, religion, or holding type in a single operation. Paint an entire region first, assign the hierarchy later.
 
-- **Other Tool Compatibility** — Looking into optimizing data creation times to ensure compatibility with other tools like Xorrad's meckt, VMP's main focus is province painting, never ever do I want to lock you into this app as your sole workflow, pick your own arsenal, and I want to help you with doing that painlessly.
+- ~~**Other Tool Compatibility** — Looking into optimizing data creation times to ensure compatibility with other tools like Xorrad's meckt, VMP's main focus is province painting, never ever do I want to lock you into this app as your sole workflow, pick your own arsenal, and I want to help you with doing that painlessly.~~ - **Implemented**, IDs are now assigned at paint time with the option to only write the definitions.csv entry
 
 ---
 

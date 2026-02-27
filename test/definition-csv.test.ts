@@ -111,22 +111,4 @@ describe('writeDefinitionCsv', () => {
     );
   });
 
-  it('creates a backup before writing', async () => {
-    await writeDefinitionCsv('/fake/definition.csv', []);
-
-    expect(fs.copyFile).toHaveBeenCalledWith('/fake/definition.csv', '/fake/definition.csv.bak');
-    const copyOrder = vi.mocked(fs.copyFile).mock.invocationCallOrder[0];
-    const writeOrder = vi.mocked(fs.writeFile).mock.invocationCallOrder[0];
-    expect(copyOrder).toBeLessThan(writeOrder);
-  });
-
-  it('proceeds with write even if backup fails (no existing file)', async () => {
-    vi.mocked(fs.copyFile).mockRejectedValue(new Error('ENOENT'));
-
-    await writeDefinitionCsv('/fake/definition.csv', [
-      { id: 1, color: { r: 10, g: 20, b: 30 }, name: 'Test' },
-    ]);
-
-    expect(fs.writeFile).toHaveBeenCalled();
-  });
 });

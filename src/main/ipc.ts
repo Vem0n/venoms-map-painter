@@ -11,26 +11,25 @@ import path from 'path';
 import { loadPng, savePng } from './image-io';
 import { parseDefinitionCsv } from './modfiles/definition-csv';
 import { ModFileManager } from './modfiles/mod-file-manager';
-import type { ProvinceData, CreateProvinceRequest, ReconcileRequest } from '@shared/types';
+import type { ProvinceData, CreateProvinceRequest, ReconcileRequest, PendingProvince, PendingSaveOptions } from '@shared/types';
 
 /** Active ModFileManager instance — created on load-mod, reused for save/create */
 let activeManager: ModFileManager | null = null;
 
 /**
- * Back up provinces.png to a map_backup/ folder before we touch anything.
- * Creates the folder if it doesn't exist. Uses a timestamp so multiple
- * sessions never overwrite each other's backups.
+ * Back up provinces.png to VMP-Backups/ before we touch anything.
+ * Uses a timestamped subfolder that mirrors the mod's directory structure
+ * so all VMP backups live in one place.
  */
 async function backupOriginalMap(modPath: string): Promise<string> {
   const srcPath = path.join(modPath, 'map_data', 'provinces.png');
-  const backupDir = path.join(modPath, 'map_backup');
-
-  await fs.mkdir(backupDir, { recursive: true });
-
   const now = new Date();
   const stamp = now.toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 19);
-  const backupName = `provinces_${stamp}.png`;
-  const backupPath = path.join(backupDir, backupName);
+  const backupDir = path.join(modPath, 'VMP-Backups', `load_${stamp}`);
+
+  await fs.mkdir(path.join(backupDir, 'map_data'), { recursive: true });
+
+  const backupPath = path.join(backupDir, 'map_data', 'provinces.png');
 
   // Only copy if the backup doesn't already exist (e.g. rapid reloads)
   try {
@@ -73,6 +72,18 @@ export function registerIpcHandlers(): void {
     height: number,
   ) => {
     const imagePath = path.join(modPath, 'map_data', 'provinces.png');
+
+    // Back up the current map to VMP-Backups/ before overwriting
+    try {
+      await fs.access(imagePath);
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 19);
+      const backupPath = path.join(modPath, 'VMP-Backups', `save_${stamp}`, 'map_data', 'provinces.png');
+      await fs.mkdir(path.dirname(backupPath), { recursive: true });
+      await fs.copyFile(imagePath, backupPath);
+    } catch {
+      // File doesn't exist yet, no backup needed
+    }
+
     return await savePng(imagePath, rgbaBuffer, width, height);
   });
 
@@ -164,6 +175,21 @@ export function registerIpcHandlers(): void {
     const province = await activeManager.createProvinceStubs(request);
     console.log(`create-province: created province ${province.id} "${province.name}"`);
     return province;
+  });
+
+  /**
+   * Flush pending provinces — write deferred province entries to disk.
+   * Called at save time when the user has pending (unsaved) provinces.
+   */
+  ipcMain.handle('flush-pending-provinces', async (
+    _event: IpcMainInvokeEvent,
+    data: { provinces: PendingProvince[]; options: PendingSaveOptions }
+  ) => {
+    if (!activeManager) {
+      throw new Error('No mod loaded. Call load-mod first.');
+    }
+    await activeManager.flushPendingProvinces(data.provinces, data.options);
+    console.log(`flush-pending-provinces: wrote ${data.provinces.length} provinces`);
   });
 
   /**

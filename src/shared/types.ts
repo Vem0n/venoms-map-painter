@@ -165,4 +165,32 @@ export interface UndoAction {
   afterSnapshots: Map<number, Uint8ClampedArray>;
   /** Description for UI */
   description: string;
+  /** Pending provinces removed by this action (undo restores them, redo re-removes) */
+  pendingRemoved?: PendingProvince[];
+  /** Pending provinces added by this action (undo removes them, redo re-adds) */
+  pendingAdded?: PendingProvince[];
+}
+
+/** A province created in the current session but not yet written to disk */
+export interface PendingProvince {
+  /** Preliminary ID (may be renumbered before save) */
+  id: number;
+  /** Assigned unique color */
+  color: RGB;
+  /** Province display name */
+  name: string;
+  /** Original creation request data for deferred file generation */
+  request: CreateProvinceRequest;
+}
+
+/** Controls what file stubs to generate when flushing pending provinces */
+export interface PendingSaveOptions {
+  /** Write definition.csv entries (mandatory — always true) */
+  definitionCsv: boolean;
+  /** Generate history/provinces/ stubs */
+  historyStubs: boolean;
+  /** Insert into common/landed_titles/ */
+  landedTitles: boolean;
+  /** Write common/province_terrain/ entries */
+  terrainEntries: boolean;
 }

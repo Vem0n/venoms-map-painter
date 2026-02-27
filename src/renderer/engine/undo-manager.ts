@@ -60,6 +60,11 @@ export class UndoManager {
     return this.redoStack.length > 0;
   }
 
+  /** Peek at the most recent action on the undo stack without popping it. */
+  peekUndo(): UndoAction | undefined {
+    return this.undoStack.length > 0 ? this.undoStack[this.undoStack.length - 1] : undefined;
+  }
+
   /** Clear all history (e.g., on new file load) */
   clear(): void {
     this.undoStack = [];
