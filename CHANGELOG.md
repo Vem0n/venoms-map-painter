@@ -1,5 +1,42 @@
 # Changelog
 
+## v2.0.0 — Lasso Selection, Voronoi Generation & Draft System
+
+### New Features
+
+**Lasso Multi-Select**
+Draw a freehand polygon to select multiple provinces at once. All provinces within the lasso are highlighted with a distinct blue overlay. Shift-click individual provinces to add or remove them from the selection. A floating action bar appears while provinces are selected with the following actions:
+- **Harmonize Colors** — Repaints all selected provinces with a cohesive palette derived from the current brush color's hue. Fully undoable.
+- **Clear Selection** — Dismisses the selection and overlay.
+
+**Voronoi Province Generator**
+A new province generator tool lets you place seed points on the map and generate Voronoi regions as province outlines. Seeds can be placed manually or auto-distributed using Poisson disk sampling. Configure cell count, minimum spacing, and color assignment before confirming. Each generated region becomes a new pending province, fully integrated with undo/redo and the Pending Provinces tab.
+
+**Draft Save & Load**
+Save your in-progress work as a named draft at any point without writing to your mod files. Drafts preserve the full map image, all pending provinces, save options, and locked/empty color state. Load a draft later to resume exactly where you left off. An unsaved-changes guard warns before closing, opening a new map, or loading a draft over modified work.
+
+**Sector Spatial Index**
+An internal spatial index accelerates all province-color lookups across the map. Lasso selection, harmonize, Voronoi seed collection, and undo/redo tile rescans all use the sector index to avoid scanning the full map, keeping operations fast.
+
+**Save Mutex**
+Concurrent Ctrl+S presses are now blocked — a second save cannot begin until the first completes, preventing race conditions during orphan detection, reconcile, and drift checks.
+
+### Improvements
+
+**Save Options per Province**
+The Pending Provinces tab now shows a per-session "On Save" options panel. `definition.csv` entries are always written (required), while history file stubs, landed titles entries, and terrain entries are individually toggleable checkboxes.
+
+**Harmonize Palette from Brush Color**
+The Harmonize Colors action now derives its palette from the hue of the currently selected brush color rather than averaging the hues of the selected provinces. This gives you direct control over the color scheme — pick your target hue in the brush, then harmonize.
+
+**More Distinct Selection Overlay**
+The lasso selection highlight is now significantly more visible: fill alpha raised from 60 → 120, border alpha raised from 180 → 230.
+
+**Undo/Redo + SectorManager Integration**
+Undo and redo now correctly rescan the spatial index after restoring tile snapshots. Harmonize undo/redo also properly re-keys pending province color entries when color remaps are reversed or reapplied.
+
+---
+
 ## v1.1.0 — Paint-First Provinces & Quality of Life
 
 ### New Features

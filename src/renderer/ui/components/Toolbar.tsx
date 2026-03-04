@@ -11,6 +11,8 @@ import { FolderOpenIcon, SaveIcon } from './icons';
 interface ToolbarProps {
   onOpenMap: () => void;
   onSaveAll: () => void;
+  onSaveDraft: () => void;
+  onLoadDraft: () => void;
   mapLoaded: boolean;
   loading: boolean;
 }
@@ -50,7 +52,7 @@ function TopBarButton({ onClick, disabled, children, title }: {
   );
 }
 
-export default function Toolbar({ onOpenMap, onSaveAll, mapLoaded, loading }: ToolbarProps) {
+export default function Toolbar({ onOpenMap, onSaveAll, onSaveDraft, onLoadDraft, mapLoaded, loading }: ToolbarProps) {
   return (
     <div style={{
       height: 36,
@@ -79,9 +81,21 @@ export default function Toolbar({ onOpenMap, onSaveAll, mapLoaded, loading }: To
           {loading ? 'Loading...' : 'Open Map'}
         </TopBarButton>
 
+        <TopBarButton onClick={onLoadDraft} disabled={loading} title="Load a saved draft">
+          <FolderOpenIcon size={14} />
+          Load Draft
+        </TopBarButton>
+
+        <div style={{ width: 1, height: 16, background: theme.border.muted, margin: '0 4px' }} />
+
         <TopBarButton onClick={onSaveAll} disabled={!mapLoaded} title="Save map image + mod files (Ctrl+S)">
           <SaveIcon size={14} />
           Save
+        </TopBarButton>
+
+        <TopBarButton onClick={onSaveDraft} disabled={!mapLoaded} title="Save draft (Ctrl+Shift+S)">
+          <SaveIcon size={14} />
+          Save Draft
         </TopBarButton>
       </div>
     </div>

@@ -48,6 +48,18 @@ export class TileEngine {
   /** Whether to draw tile grid borders */
   private showGrid = false;
 
+  /** Overlay system — per-tile RGBA buffers and GPU textures for preview rendering */
+  private overlayBuffers: (Uint8ClampedArray | null)[] = [];
+  private overlayTextures: (WebGLTexture | null)[] = [];
+  private overlayGpuDirty: Set<number> = new Set();
+  private showOverlay = false;
+
+  /** Heightmap overlay — separate per-tile GPU textures, blended via shader */
+  private heightmapTextures: (WebGLTexture | null)[] = [];
+  private showHeightmap = false;
+  private heightmapOpacity = 0.5;
+  private heightmapLoaded = false;
+
   // WebGL resources
   private program: WebGLProgram;
   private vao: WebGLVertexArrayObject;
@@ -59,6 +71,11 @@ export class TileEngine {
     resolution: WebGLUniformLocation;
     tileTexture: WebGLUniformLocation;
     showGrid: WebGLUniformLocation;
+    overlayTexture: WebGLUniformLocation;
+    showOverlay: WebGLUniformLocation;
+    heightmapTexture: WebGLUniformLocation;
+    showHeightmap: WebGLUniformLocation;
+    heightmapOpacity: WebGLUniformLocation;
   };
 
   constructor(canvas: HTMLCanvasElement) {
@@ -89,6 +106,11 @@ export class TileEngine {
       resolution: getUniform('u_resolution'),
       tileTexture: getUniform('u_tileTexture'),
       showGrid: getUniform('u_showGrid'),
+      overlayTexture: getUniform('u_overlayTexture'),
+      showOverlay: getUniform('u_showOverlay'),
+      heightmapTexture: getUniform('u_heightmapTexture'),
+      showHeightmap: getUniform('u_showHeightmap'),
+      heightmapOpacity: getUniform('u_heightmapOpacity'),
     };
 
     // Create a unit-quad VAO (two triangles covering [0,0]-[1,1])
@@ -132,6 +154,23 @@ export class TileEngine {
 
     // Release CPU tile buffers
     this.tileBuffers.length = 0;
+
+    // Release overlay resources
+    for (const tex of this.overlayTextures) {
+      if (tex) gl.deleteTexture(tex);
+    }
+    this.overlayTextures.length = 0;
+    this.overlayBuffers.length = 0;
+    this.overlayGpuDirty.clear();
+    this.showOverlay = false;
+
+    // Release heightmap resources
+    for (const tex of this.heightmapTextures) {
+      if (tex) gl.deleteTexture(tex);
+    }
+    this.heightmapTextures.length = 0;
+    this.showHeightmap = false;
+    this.heightmapLoaded = false;
 
     this.dirtyTiles.clear();
     this.gpuDirtyTiles.clear();
@@ -257,6 +296,130 @@ export class TileEngine {
     this.gpuDirtyTiles.add(tileIndex);
   }
 
+  /* ── Overlay System ────────────────────────────────────────── */
+
+  /**
+   * Set an overlay pixel at global coordinates.
+   * Lazily creates the overlay buffer and GPU texture for the tile.
+   */
+  setOverlayPixel(gx: number, gy: number, r: number, g: number, b: number, a: number): void {
+    if (gx < 0 || gx >= this.mapWidth || gy < 0 || gy >= this.mapHeight) return;
+    const tx = Math.floor(gx / TILE_SIZE);
+    const ty = Math.floor(gy / TILE_SIZE);
+    const lx = gx % TILE_SIZE;
+    const ly = gy % TILE_SIZE;
+    const tileIndex = ty * this.tilesX + tx;
+
+    // Lazy-create overlay buffer for this tile
+    if (!this.overlayBuffers[tileIndex]) {
+      this.overlayBuffers[tileIndex] = new Uint8ClampedArray(TILE_SIZE * TILE_SIZE * BYTES_PER_PIXEL);
+    }
+
+    const buf = this.overlayBuffers[tileIndex]!;
+    const offset = (ly * TILE_SIZE + lx) * BYTES_PER_PIXEL;
+    buf[offset] = r;
+    buf[offset + 1] = g;
+    buf[offset + 2] = b;
+    buf[offset + 3] = a;
+    this.overlayGpuDirty.add(tileIndex);
+  }
+
+  /** Clear all overlay data and GPU textures. */
+  clearOverlay(): void {
+    const gl = this.gl;
+    for (const tex of this.overlayTextures) {
+      if (tex) gl.deleteTexture(tex);
+    }
+    this.overlayTextures.length = 0;
+    this.overlayBuffers.length = 0;
+    this.overlayGpuDirty.clear();
+    this.showOverlay = false;
+  }
+
+  /** Toggle overlay visibility. */
+  setOverlayVisible(visible: boolean): void {
+    this.showOverlay = visible;
+  }
+
+  /** Check if overlay is currently visible. */
+  isOverlayVisible(): boolean {
+    return this.showOverlay;
+  }
+
+  /* ── Heightmap Overlay ──────────────────────────────────────── */
+
+  /**
+   * Load a heightmap RGBA buffer and chunk it into per-tile GPU textures.
+   * The heightmap must be the same resolution as the loaded map.
+   * Does not modify the original file — purely a read-only visual overlay.
+   */
+  loadHeightmap(rgbaBuffer: Uint8Array | Uint8ClampedArray, width: number, height: number): void {
+    if (!this.loaded) return;
+    if (width !== this.mapWidth || height !== this.mapHeight) {
+      console.warn(`Heightmap size ${width}x${height} doesn't match map ${this.mapWidth}x${this.mapHeight}, skipping`);
+      return;
+    }
+
+    const gl = this.gl;
+
+    // Release previous heightmap textures
+    for (const tex of this.heightmapTextures) {
+      if (tex) gl.deleteTexture(tex);
+    }
+    this.heightmapTextures.length = 0;
+
+    // Chunk into per-tile textures (same layout as main tiles)
+    for (let ty = 0; ty < this.tilesY; ty++) {
+      for (let tx = 0; tx < this.tilesX; tx++) {
+        const tileIndex = ty * this.tilesX + tx;
+        const tileBuffer = new Uint8ClampedArray(TILE_SIZE * TILE_SIZE * BYTES_PER_PIXEL);
+
+        const srcX = tx * TILE_SIZE;
+        const srcY = ty * TILE_SIZE;
+        const copyW = Math.min(TILE_SIZE, width - srcX);
+        const copyH = Math.min(TILE_SIZE, height - srcY);
+
+        for (let row = 0; row < copyH; row++) {
+          const srcOffset = ((srcY + row) * width + srcX) * BYTES_PER_PIXEL;
+          const dstOffset = row * TILE_SIZE * BYTES_PER_PIXEL;
+          tileBuffer.set(
+            rgbaBuffer.subarray(srcOffset, srcOffset + copyW * BYTES_PER_PIXEL),
+            dstOffset
+          );
+        }
+
+        this.heightmapTextures[tileIndex] = this.createTileTexture(gl, tileBuffer);
+      }
+    }
+
+    this.heightmapLoaded = true;
+  }
+
+  /** Toggle heightmap overlay visibility. */
+  setHeightmapVisible(visible: boolean): void {
+    this.showHeightmap = visible;
+  }
+
+  /** Check if heightmap overlay is currently visible. */
+  isHeightmapVisible(): boolean {
+    return this.showHeightmap;
+  }
+
+  /** Set heightmap overlay opacity (0.0 to 1.0). */
+  setHeightmapOpacity(opacity: number): void {
+    this.heightmapOpacity = Math.max(0, Math.min(1, opacity));
+  }
+
+  /** Get current heightmap overlay opacity. */
+  getHeightmapOpacity(): number {
+    return this.heightmapOpacity;
+  }
+
+  /** Whether a heightmap has been loaded. */
+  isHeightmapLoaded(): boolean {
+    return this.heightmapLoaded;
+  }
+
   /** Compute which tiles are visible in the current viewport */
   private getVisibleTiles(): TileCoord[] {
     const vpWidth = this.canvas.width / this.zoom;
@@ -284,7 +447,7 @@ export class TileEngine {
     const cw = this.canvas.width;
     const ch = this.canvas.height;
 
-    // Re-upload GPU-dirty tiles
+    // Re-upload GPU-dirty main tiles
     for (const tileIndex of this.gpuDirtyTiles) {
       const tex = this.tileTextures[tileIndex];
       if (!tex) continue;
@@ -297,6 +460,23 @@ export class TileEngine {
       );
     }
     this.gpuDirtyTiles.clear();
+
+    // Re-upload GPU-dirty overlay tiles
+    for (const tileIndex of this.overlayGpuDirty) {
+      const buf = this.overlayBuffers[tileIndex];
+      if (!buf) continue;
+      if (!this.overlayTextures[tileIndex]) {
+        this.overlayTextures[tileIndex] = this.createTileTexture(gl, buf);
+      } else {
+        gl.bindTexture(gl.TEXTURE_2D, this.overlayTextures[tileIndex]!);
+        gl.texSubImage2D(
+          gl.TEXTURE_2D, 0, 0, 0,
+          TILE_SIZE, TILE_SIZE,
+          gl.RGBA, gl.UNSIGNED_BYTE, buf
+        );
+      }
+    }
+    this.overlayGpuDirty.clear();
 
     // Set up viewport and clear
     gl.viewport(0, 0, cw, ch);
@@ -325,6 +505,32 @@ export class TileEngine {
 
       gl.bindTexture(gl.TEXTURE_2D, tex);
       gl.uniform2f(this.uniforms.tilePosition, tx * TILE_SIZE, ty * TILE_SIZE);
+
+      // Bind overlay texture if available for this tile
+      const overlayTex = this.showOverlay ? this.overlayTextures[tileIndex] : null;
+      if (overlayTex) {
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, overlayTex);
+        gl.uniform1i(this.uniforms.overlayTexture, 1);
+        gl.uniform1i(this.uniforms.showOverlay, 1);
+        gl.activeTexture(gl.TEXTURE0);
+      } else {
+        gl.uniform1i(this.uniforms.showOverlay, 0);
+      }
+
+      // Bind heightmap texture if available for this tile
+      const hmTex = this.showHeightmap ? this.heightmapTextures[tileIndex] : null;
+      if (hmTex) {
+        gl.activeTexture(gl.TEXTURE2);
+        gl.bindTexture(gl.TEXTURE_2D, hmTex);
+        gl.uniform1i(this.uniforms.heightmapTexture, 2);
+        gl.uniform1i(this.uniforms.showHeightmap, 1);
+        gl.uniform1f(this.uniforms.heightmapOpacity, this.heightmapOpacity);
+        gl.activeTexture(gl.TEXTURE0);
+      } else {
+        gl.uniform1i(this.uniforms.showHeightmap, 0);
+      }
+
       gl.drawArrays(gl.TRIANGLES, 0, 6);
     }
 
@@ -401,6 +607,11 @@ export class TileEngine {
     return this.zoom;
   }
 
+  /** Get current camera state (offset + zoom) for coordinate conversion */
+  getCamera(): { offsetX: number; offsetY: number; zoom: number } {
+    return { offsetX: this.offsetX, offsetY: this.offsetY, zoom: this.zoom };
+  }
+
   /** Get loaded map dimensions */
   getMapSize(): { width: number; height: number } {
     return { width: this.mapWidth, height: this.mapHeight };
@@ -409,6 +620,20 @@ export class TileEngine {
   /** Whether image has been loaded */
   isLoaded(): boolean {
     return this.loaded;
+  }
+
+  /**
+   * Get a read-only reference to a tile's pixel buffer.
+   * For use by spatial indexes that need to scan pixel data without WebGL.
+   */
+  getTileBuffer(tileIndex: number): Uint8ClampedArray | null {
+    if (tileIndex < 0 || tileIndex >= this.tileBuffers.length) return null;
+    return this.tileBuffers[tileIndex];
+  }
+
+  /** Get the tile grid dimensions */
+  getTileGridSize(): { tilesX: number; tilesY: number } {
+    return { tilesX: this.tilesX, tilesY: this.tilesY };
   }
 
   /** Get all dirty tile indices (for save) */
@@ -540,6 +765,337 @@ export class TileEngine {
           setTimeout(processChunk, 0);
         } else {
           resolve(result);
+        }
+      };
+
+      processChunk();
+    });
+  }
+
+  /**
+   * Scan tiles for pixels matching selectedColors and write selection
+   * overlay (tint + border) directly using raw buffer access.
+   *
+   * Avoids per-pixel getPixel()/setOverlayPixel() overhead by accessing
+   * tileBuffers[] directly and using packed 24-bit integer color comparison
+   * instead of string allocation. Follows the same chunked pattern as
+   * collectUsedColorsAsync().
+   *
+   * @param selectedColors - Set of rgbToKey strings for selected province colors
+   * @param fillRGBA - [r, g, b, a] interior tint color
+   * @param borderRGBA - [r, g, b, a] border pixel color
+   * @param tileSubset - Optional set of tile indices to scan. When provided, only
+   *   these tiles are processed instead of the full map. Use with SectorManager to
+   *   restrict scanning to tiles that actually contain the selected colors.
+   */
+  scanTilesForOverlay(
+    selectedColors: Set<string>,
+    fillRGBA: [number, number, number, number],
+    borderRGBA: [number, number, number, number],
+    tileSubset?: ReadonlySet<number>,
+  ): Promise<void> {
+    if (!this.loaded || selectedColors.size === 0) return Promise.resolve();
+
+    // Convert string keys to packed 24-bit integers for fast numeric lookup
+    const numericColors = new Set<number>();
+    for (const key of selectedColors) {
+      const parts = key.split(',');
+      numericColors.add(
+        (parseInt(parts[0], 10) << 16) |
+        (parseInt(parts[1], 10) << 8) |
+        parseInt(parts[2], 10)
+      );
+    }
+
+    // Build ordered list of tiles to process
+    const tileIndices: number[] = tileSubset
+      ? Array.from(tileSubset).sort((a, b) => a - b)
+      : Array.from({ length: this.tilesX * this.tilesY }, (_, i) => i);
+    const totalTiles = tileIndices.length;
+    const chunkSize = 4;
+    let cursor = 0;
+    const rowStride = TILE_SIZE * BYTES_PER_PIXEL;
+
+    const [fillR, fillG, fillB, fillA] = fillRGBA;
+    const [borderR, borderG, borderB, borderA] = borderRGBA;
+
+    this.clearOverlay();
+
+    return new Promise((resolve) => {
+      const processChunk = (): void => {
+        const end = Math.min(cursor + chunkSize, totalTiles);
+
+        for (; cursor < end; cursor++) {
+          const tileIdx = tileIndices[cursor];
+          const tx = tileIdx % this.tilesX;
+          const ty = Math.floor(tileIdx / this.tilesX);
+          const buf = this.tileBuffers[tileIdx];
+
+          const tileBaseX = tx * TILE_SIZE;
+          const tileBaseY = ty * TILE_SIZE;
+          const validW = Math.min(TILE_SIZE, this.mapWidth - tileBaseX);
+          const validH = Math.min(TILE_SIZE, this.mapHeight - tileBaseY);
+
+          // Precompute neighbor tile buffers for cross-tile border detection
+          const leftBuf = tx > 0
+            ? this.tileBuffers[ty * this.tilesX + (tx - 1)] : null;
+          const rightBuf = tx < this.tilesX - 1
+            ? this.tileBuffers[ty * this.tilesX + (tx + 1)] : null;
+          const upBuf = ty > 0
+            ? this.tileBuffers[(ty - 1) * this.tilesX + tx] : null;
+          const downBuf = ty < this.tilesY - 1
+            ? this.tileBuffers[(ty + 1) * this.tilesX + tx] : null;
+
+          let overlayBuf: Uint8ClampedArray | null = null;
+
+          for (let ly = 0; ly < validH; ly++) {
+            const rowBase = ly * rowStride;
+
+            for (let lx = 0; lx < validW; lx++) {
+              const off = rowBase + lx * BYTES_PER_PIXEL;
+              const packed = (buf[off] << 16) | (buf[off + 1] << 8) | buf[off + 2];
+              if (!numericColors.has(packed)) continue;
+
+              // Check if border pixel (any neighbor is NOT a selected color)
+              let isBorder = false;
+
+              // Left neighbor
+              if (lx === 0) {
+                if (!leftBuf) {
+                  isBorder = true;
+                } else {
+                  const lo = rowBase + (TILE_SIZE - 1) * BYTES_PER_PIXEL;
+                  isBorder = !numericColors.has(
+                    (leftBuf[lo] << 16) | (leftBuf[lo + 1] << 8) | leftBuf[lo + 2]
+                  );
+                }
+              } else {
+                const lo = off - BYTES_PER_PIXEL;
+                isBorder = !numericColors.has(
+                  (buf[lo] << 16) | (buf[lo + 1] << 8) | buf[lo + 2]
+                );
+              }
+
+              // Right neighbor
+              if (!isBorder) {
+                if (lx === validW - 1) {
+                  if (tileBaseX + validW >= this.mapWidth || !rightBuf) {
+                    isBorder = true;
+                  } else {
+                    const ro = rowBase; // lx=0 in right tile, same ly
+                    isBorder = !numericColors.has(
+                      (rightBuf[ro] << 16) | (rightBuf[ro + 1] << 8) | rightBuf[ro + 2]
+                    );
+                  }
+                } else {
+                  const ro = off + BYTES_PER_PIXEL;
+                  isBorder = !numericColors.has(
+                    (buf[ro] << 16) | (buf[ro + 1] << 8) | buf[ro + 2]
+                  );
+                }
+              }
+
+              // Up neighbor
+              if (!isBorder) {
+                if (ly === 0) {
+                  if (!upBuf) {
+                    isBorder = true;
+                  } else {
+                    const uo = (TILE_SIZE - 1) * rowStride + lx * BYTES_PER_PIXEL;
+                    isBorder = !numericColors.has(
+                      (upBuf[uo] << 16) | (upBuf[uo + 1] << 8) | upBuf[uo + 2]
+                    );
+                  }
+                } else {
+                  const uo = off - rowStride;
+                  isBorder = !numericColors.has(
+                    (buf[uo] << 16) | (buf[uo + 1] << 8) | buf[uo + 2]
+                  );
+                }
+              }
+
+              // Down neighbor
+              if (!isBorder) {
+                if (ly === validH - 1) {
+                  if (tileBaseY + validH >= this.mapHeight || !downBuf) {
+                    isBorder = true;
+                  } else {
+                    const doff = lx * BYTES_PER_PIXEL; // ly=0 in down tile
+                    isBorder = !numericColors.has(
+                      (downBuf[doff] << 16) | (downBuf[doff + 1] << 8) | downBuf[doff + 2]
+                    );
+                  }
+                } else {
+                  const doff = off + rowStride;
+                  isBorder = !numericColors.has(
+                    (buf[doff] << 16) | (buf[doff + 1] << 8) | buf[doff + 2]
+                  );
+                }
+              }
+
+              // Lazy-allocate overlay buffer for this tile
+              if (!overlayBuf) {
+                overlayBuf = new Uint8ClampedArray(TILE_SIZE * TILE_SIZE * BYTES_PER_PIXEL);
+                this.overlayBuffers[tileIdx] = overlayBuf;
+              }
+
+              if (isBorder) {
+                overlayBuf[off] = borderR;
+                overlayBuf[off + 1] = borderG;
+                overlayBuf[off + 2] = borderB;
+                overlayBuf[off + 3] = borderA;
+              } else {
+                overlayBuf[off] = fillR;
+                overlayBuf[off + 1] = fillG;
+                overlayBuf[off + 2] = fillB;
+                overlayBuf[off + 3] = fillA;
+              }
+
+              if (overlayBuf) this.overlayGpuDirty.add(tileIdx);
+            }
+          }
+        }
+
+        if (cursor < totalTiles) {
+          setTimeout(processChunk, 0);
+        } else {
+          this.showOverlay = true;
+          resolve();
+        }
+      };
+
+      processChunk();
+    });
+  }
+
+  /**
+   * Find all tile indices that contain at least one pixel matching any color
+   * in the given set. Uses packed 24-bit integer comparison for speed.
+   * Synchronous — used to pre-discover tiles for undo snapshots.
+   *
+   * @param colorKeys - Set of rgbToKey strings for colors to find
+   * @param tileSubset - Optional set of tile indices to search. When provided,
+   *   only these tiles are checked. Use with SectorManager to restrict the search.
+   */
+  findTilesWithColors(colorKeys: Set<string>, tileSubset?: ReadonlySet<number>): Set<number> {
+    const result = new Set<number>();
+    if (!this.loaded || colorKeys.size === 0) return result;
+
+    const numericColors = new Set<number>();
+    for (const key of colorKeys) {
+      const parts = key.split(',');
+      numericColors.add(
+        (parseInt(parts[0], 10) << 16) |
+        (parseInt(parts[1], 10) << 8) |
+        parseInt(parts[2], 10)
+      );
+    }
+
+    const tilesToScan = tileSubset
+      ? Array.from(tileSubset)
+      : Array.from({ length: this.tilesX * this.tilesY }, (_, i) => i);
+
+    for (const tileIdx of tilesToScan) {
+      const tx = tileIdx % this.tilesX;
+      const ty = Math.floor(tileIdx / this.tilesX);
+      const buf = this.tileBuffers[tileIdx];
+      const tileBaseX = tx * TILE_SIZE;
+      const tileBaseY = ty * TILE_SIZE;
+      const validW = Math.min(TILE_SIZE, this.mapWidth - tileBaseX);
+      const validH = Math.min(TILE_SIZE, this.mapHeight - tileBaseY);
+      const rowStride = TILE_SIZE * BYTES_PER_PIXEL;
+
+      let found = false;
+      for (let ly = 0; ly < validH && !found; ly++) {
+        const rowBase = ly * rowStride;
+        for (let lx = 0; lx < validW && !found; lx++) {
+          const off = rowBase + lx * BYTES_PER_PIXEL;
+          const packed = (buf[off] << 16) | (buf[off + 1] << 8) | buf[off + 2];
+          if (numericColors.has(packed)) found = true;
+        }
+      }
+
+      if (found) result.add(tileIdx);
+    }
+
+    return result;
+  }
+
+  /**
+   * Replace all pixels of one color with another across the entire map.
+   * Uses direct tile buffer access for performance (same pattern as
+   * scanTilesForOverlay). Marks affected tiles as dirty for GPU re-upload
+   * and save tracking.
+   *
+   * @param oldColor - The color to find and replace
+   * @param newColor - The replacement color
+   * @returns Affected tile indices and total pixel count replaced
+   */
+  replaceColorAsync(
+    oldColor: RGB,
+    newColor: RGB,
+    tileSubset?: ReadonlySet<number>,
+  ): Promise<{ affectedTiles: Set<number>; pixelCount: number }> {
+    if (!this.loaded) return Promise.resolve({ affectedTiles: new Set(), pixelCount: 0 });
+
+    const oldPacked = (oldColor.r << 16) | (oldColor.g << 8) | oldColor.b;
+    const newR = newColor.r, newG = newColor.g, newB = newColor.b;
+
+    const totalTiles = this.tilesX * this.tilesY;
+    const tileIndices: number[] = tileSubset
+      ? Array.from(tileSubset).filter(i => i >= 0 && i < totalTiles).sort((a, b) => a - b)
+      : Array.from({ length: totalTiles }, (_, i) => i);
+    const tileCount = tileIndices.length;
+    const chunkSize = 4;
+    let cursor = 0;
+    const affectedTiles = new Set<number>();
+    let pixelCount = 0;
+
+    return new Promise((resolve) => {
+      const processChunk = (): void => {
+        const end = Math.min(cursor + chunkSize, tileCount);
+
+        for (; cursor < end; cursor++) {
+          const tileIdx = tileIndices[cursor];
+          const tx = tileIdx % this.tilesX;
+          const ty = Math.floor(tileIdx / this.tilesX);
+          const buf = this.tileBuffers[tileIdx];
+
+          const tileBaseX = tx * TILE_SIZE;
+          const tileBaseY = ty * TILE_SIZE;
+          const validW = Math.min(TILE_SIZE, this.mapWidth - tileBaseX);
+          const validH = Math.min(TILE_SIZE, this.mapHeight - tileBaseY);
+          const rowStride = TILE_SIZE * BYTES_PER_PIXEL;
+
+          let tileHit = false;
+
+          for (let ly = 0; ly < validH; ly++) {
+            const rowBase = ly * rowStride;
+            for (let lx = 0; lx < validW; lx++) {
+              const off = rowBase + lx * BYTES_PER_PIXEL;
+              const packed = (buf[off] << 16) | (buf[off + 1] << 8) | buf[off + 2];
+              if (packed === oldPacked) {
+                buf[off] = newR;
+                buf[off + 1] = newG;
+                buf[off + 2] = newB;
+                // alpha stays 255
+                pixelCount++;
+                tileHit = true;
+              }
+            }
+          }
+
+          if (tileHit) {
+            affectedTiles.add(tileIdx);
+            this.dirtyTiles.add(tileIdx);
+            this.gpuDirtyTiles.add(tileIdx);
+          }
+        }
+
+        if (cursor < tileCount) {
+          setTimeout(processChunk, 0);
+        } else {
+          resolve({ affectedTiles, pixelCount });
         }
       };
 

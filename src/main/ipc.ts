@@ -11,7 +11,9 @@ import path from 'path';
 import { loadPng, savePng } from './image-io';
 import { parseDefinitionCsv } from './modfiles/definition-csv';
 import { ModFileManager } from './modfiles/mod-file-manager';
-import type { ProvinceData, CreateProvinceRequest, ReconcileRequest, PendingProvince, PendingSaveOptions } from '@shared/types';
+import { saveDraft, listDrafts, loadDraftImage, loadDraftMetadata, deleteDraft } from './drafts';
+import { existsSync } from 'fs';
+import type { ProvinceData, CreateProvinceRequest, ReconcileRequest, PendingProvince, PendingSaveOptions, DraftSummary, DraftMetadata, RGB } from '@shared/types';
 
 /** Active ModFileManager instance — created on load-mod, reused for save/create */
 let activeManager: ModFileManager | null = null;
@@ -205,5 +207,84 @@ export function registerIpcHandlers(): void {
     }
     await activeManager.reconcile(data);
     console.log(`reconcile-provinces: removed ${data.removedIds.length} provinces, remapped ${Object.keys(data.idMap).length} IDs`);
+  });
+
+  /* ── Heightmap overlay ────────────────────────────────────────────── */
+
+  /**
+   * Load heightmap.png from the mod's map_data/ directory.
+   * Returns null if the file doesn't exist (heightmap is optional).
+   * The heightmap is the same resolution as provinces.png.
+   */
+  ipcMain.handle('load-heightmap', async (_event: IpcMainInvokeEvent, modPath: string) => {
+    const heightmapPath = path.join(modPath, 'map_data', 'heightmap.png');
+    if (!existsSync(heightmapPath)) {
+      return null;
+    }
+    try {
+      const result = await loadPng(heightmapPath);
+      console.log(`load-heightmap: loaded ${result.width}x${result.height} from ${heightmapPath}`);
+      return result;
+    } catch (err) {
+      console.warn('load-heightmap: failed to load', err);
+      return null;
+    }
+  });
+
+  /* ── Draft operations ─────────────────────────────────────────────── */
+
+  /** Save current state as a draft */
+  ipcMain.handle('save-draft', async (
+    _event: IpcMainInvokeEvent,
+    modPath: string,
+    name: string,
+    rgbaBuffer: Uint8Array,
+    width: number,
+    height: number,
+    metadata: {
+      pendingProvinces: PendingProvince[];
+      pendingSaveOptions: PendingSaveOptions;
+      emptyColors: RGB[];
+      lockedColor: RGB | null;
+    },
+  ) => {
+    await saveDraft(modPath, name, rgbaBuffer, width, height, metadata);
+    console.log(`save-draft: saved "${name}" to ${modPath}/VMP-Drafts/`);
+  });
+
+  /** List available drafts for a mod */
+  ipcMain.handle('list-drafts', async (
+    _event: IpcMainInvokeEvent,
+    modPath: string,
+  ): Promise<DraftSummary[]> => {
+    return await listDrafts(modPath);
+  });
+
+  /** Load a draft's image */
+  ipcMain.handle('load-draft-image', async (
+    _event: IpcMainInvokeEvent,
+    modPath: string,
+    folderName: string,
+  ) => {
+    return await loadDraftImage(modPath, folderName);
+  });
+
+  /** Load a draft's metadata */
+  ipcMain.handle('load-draft-metadata', async (
+    _event: IpcMainInvokeEvent,
+    modPath: string,
+    folderName: string,
+  ): Promise<DraftMetadata> => {
+    return await loadDraftMetadata(modPath, folderName);
+  });
+
+  /** Delete a draft */
+  ipcMain.handle('delete-draft', async (
+    _event: IpcMainInvokeEvent,
+    modPath: string,
+    folderName: string,
+  ) => {
+    await deleteDraft(modPath, folderName);
+    console.log(`delete-draft: removed ${folderName} from ${modPath}/VMP-Drafts/`);
   });
 }

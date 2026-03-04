@@ -43,6 +43,43 @@ const api = {
 
   reconcileProvinces: (data: unknown): Promise<void> =>
     ipcRenderer.invoke('reconcile-provinces', data),
+
+  saveDraft: (
+    modPath: string,
+    name: string,
+    rgbaBuffer: Uint8Array,
+    width: number,
+    height: number,
+    metadata: unknown,
+  ): Promise<void> =>
+    ipcRenderer.invoke('save-draft', modPath, name, rgbaBuffer, width, height, metadata),
+
+  listDrafts: (modPath: string): Promise<unknown[]> =>
+    ipcRenderer.invoke('list-drafts', modPath),
+
+  loadDraftImage: (modPath: string, folderName: string): Promise<{ buffer: Uint8Array; width: number; height: number }> =>
+    ipcRenderer.invoke('load-draft-image', modPath, folderName),
+
+  loadDraftMetadata: (modPath: string, folderName: string): Promise<unknown> =>
+    ipcRenderer.invoke('load-draft-metadata', modPath, folderName),
+
+  deleteDraft: (modPath: string, folderName: string): Promise<void> =>
+    ipcRenderer.invoke('delete-draft', modPath, folderName),
+
+  loadHeightmap: (modPath: string): Promise<{ buffer: Uint8Array; width: number; height: number } | null> =>
+    ipcRenderer.invoke('load-heightmap', modPath),
+
+  /** Register a callback for when the main process asks if we can close */
+  onCheckBeforeClose: (callback: () => void): (() => void) => {
+    const handler = () => callback();
+    ipcRenderer.on('check-before-close', handler);
+    return () => { ipcRenderer.removeListener('check-before-close', handler); };
+  },
+
+  /** Tell the main process it's OK to close the window */
+  confirmClose: (): void => {
+    ipcRenderer.send('confirm-close');
+  },
 };
 
 contextBridge.exposeInMainWorld('mapPainter', api);

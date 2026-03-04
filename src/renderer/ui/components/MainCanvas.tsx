@@ -13,6 +13,7 @@ import { TileEngine } from '@engine/tile-engine';
 import type { ToolManager } from '@tools/tool-manager';
 import type { ColorRegistry } from '@registry/color-registry';
 import type { RGB } from '@shared/types';
+import type { LassoPoint } from '@tools/lasso-select';
 import { theme } from '../theme';
 
 export interface MainCanvasProps {
@@ -40,9 +41,19 @@ export interface MainCanvasProps {
   hoverInspect?: boolean;
   /** Color registry ref for looking up province data */
   registryRef?: React.RefObject<ColorRegistry>;
+  /** When true, next left click picks a province for the Voronoi generator */
+  pickingGenerator?: boolean;
+  /** Called when a color is picked for the generator */
+  onPickGenerator?: (color: RGB) => void;
+  /** When true, lasso multi-select is active */
+  lassoActive?: boolean;
+  /** Called when lasso polygon is completed (mouseup with >=3 points) */
+  onLassoComplete?: (polygon: LassoPoint[]) => void;
+  /** Called on shift+click during lasso mode for single-province toggle */
+  onLassoShiftClick?: (gx: number, gy: number) => void;
 }
 
-export default function MainCanvas({ onEngineReady, onCursorMove, onZoomChange, toolManagerRef, pickingEmpty, onPickEmpty, pickingLock, onPickLock, pickingColor, onPickColor, inspectorMode, onProvinceClick, hoverInspect, registryRef }: MainCanvasProps) {
+export default function MainCanvas({ onEngineReady, onCursorMove, onZoomChange, toolManagerRef, pickingEmpty, onPickEmpty, pickingLock, onPickLock, pickingColor, onPickColor, inspectorMode, onProvinceClick, hoverInspect, registryRef, pickingGenerator, onPickGenerator, lassoActive, onLassoComplete, onLassoShiftClick }: MainCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<TileEngine | null>(null);
@@ -50,12 +61,59 @@ export default function MainCanvas({ onEngineReady, onCursorMove, onZoomChange, 
   const isPaintingRef = useRef(false);
   const lastMouseRef = useRef({ x: 0, y: 0 });
 
+  // Lasso drawing state
+  const isLassoDrawingRef = useRef(false);
+  const lassoPointsRef = useRef<LassoPoint[]>([]);
+  const lassoCanvasRef = useRef<HTMLCanvasElement>(null);
+
   // Hover inspect tooltip state
   const [tooltipData, setTooltipData] = useState<{
     screenX: number; screenY: number;
     color: RGB;
     province: { id: number; name: string; titleKey?: string; culture?: string; religion?: string } | null;
   } | null>(null);
+
+  /** Draw lasso outline on the 2D overlay canvas */
+  const drawLassoOutline = useCallback((points: LassoPoint[]) => {
+    const lc = lassoCanvasRef.current;
+    const engine = engineRef.current;
+    if (!lc || !engine || points.length < 2) return;
+
+    const ctx = lc.getContext('2d');
+    if (!ctx) return;
+
+    const { offsetX, offsetY, zoom } = engine.getCamera();
+    ctx.clearRect(0, 0, lc.width, lc.height);
+
+    ctx.beginPath();
+    const sx = (points[0].x - offsetX) * zoom;
+    const sy = (points[0].y - offsetY) * zoom;
+    ctx.moveTo(sx, sy);
+
+    for (let i = 1; i < points.length; i++) {
+      const px = (points[i].x - offsetX) * zoom;
+      const py = (points[i].y - offsetY) * zoom;
+      ctx.lineTo(px, py);
+    }
+
+    ctx.closePath();
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 4]);
+    ctx.stroke();
+
+    // Light fill to show the lasso area
+    ctx.fillStyle = 'rgba(88, 166, 255, 0.1)';
+    ctx.fill();
+  }, []);
+
+  /** Clear lasso overlay canvas */
+  const clearLassoCanvas = useCallback(() => {
+    const lc = lassoCanvasRef.current;
+    if (!lc) return;
+    const ctx = lc.getContext('2d');
+    if (ctx) ctx.clearRect(0, 0, lc.width, lc.height);
+  }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -66,6 +124,13 @@ export default function MainCanvas({ onEngineReady, onCursorMove, onZoomChange, 
     const rect = container.getBoundingClientRect();
     canvas.width = rect.width;
     canvas.height = rect.height;
+
+    // Size the lasso overlay canvas too
+    const lc = lassoCanvasRef.current;
+    if (lc) {
+      lc.width = rect.width;
+      lc.height = rect.height;
+    }
 
     // Initialize TileEngine
     const engine = new TileEngine(canvas);
@@ -92,6 +157,12 @@ export default function MainCanvas({ onEngineReady, onCursorMove, onZoomChange, 
         const { width, height } = entry.contentRect;
         if (width > 0 && height > 0) {
           engine.resize(width, height);
+          // Also resize lasso overlay canvas
+          const lc = lassoCanvasRef.current;
+          if (lc) {
+            lc.width = width;
+            lc.height = height;
+          }
         }
       }
     });
@@ -125,6 +196,28 @@ export default function MainCanvas({ onEngineReady, onCursorMove, onZoomChange, 
     if (e.button === 0) {
       const coords = getGlobalCoords(e);
       if (!coords) return;
+
+      // Lasso mode: draw polygon or shift+click toggle
+      if (lassoActive) {
+        if (e.shiftKey && onLassoShiftClick) {
+          onLassoShiftClick(coords.gx, coords.gy);
+          return;
+        }
+        // Start lasso drawing
+        isLassoDrawingRef.current = true;
+        lassoPointsRef.current = [{ x: coords.gx, y: coords.gy }];
+        return;
+      }
+
+      // Generator picking mode: sample color for Voronoi subdivision
+      if (pickingGenerator && onPickGenerator) {
+        const engine = engineRef.current;
+        if (engine && engine.isLoaded()) {
+          const color = engine.getPixel(coords.gx, coords.gy);
+          onPickGenerator(color);
+        }
+        return;
+      }
 
       // Picking modes: sample color from map instead of painting
       if (pickingEmpty && onPickEmpty) {
@@ -173,7 +266,7 @@ export default function MainCanvas({ onEngineReady, onCursorMove, onZoomChange, 
         tm.handleDragStart(coords.gx, coords.gy);
       }
     }
-  }, [getGlobalCoords, toolManagerRef, pickingEmpty, onPickEmpty, pickingLock, onPickLock, pickingColor, onPickColor, inspectorMode, onProvinceClick]);
+  }, [getGlobalCoords, toolManagerRef, pickingEmpty, onPickEmpty, pickingLock, onPickLock, pickingColor, onPickColor, inspectorMode, onProvinceClick, pickingGenerator, onPickGenerator, lassoActive, onLassoShiftClick]);
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
     const engine = engineRef.current;
@@ -203,6 +296,20 @@ export default function MainCanvas({ onEngineReady, onCursorMove, onZoomChange, 
       setTooltipData(null);
     }
 
+    // Handle lasso drawing
+    if (isLassoDrawingRef.current && coords) {
+      const points = lassoPointsRef.current;
+      const last = points[points.length - 1];
+      const dx = coords.gx - last.x;
+      const dy = coords.gy - last.y;
+      // Only add point if moved at least 2px to reduce density
+      if (dx * dx + dy * dy >= 4) {
+        points.push({ x: coords.gx, y: coords.gy });
+        drawLassoOutline(points);
+      }
+      return;
+    }
+
     // Handle panning
     if (isPanningRef.current) {
       const dx = e.clientX - lastMouseRef.current.x;
@@ -219,12 +326,32 @@ export default function MainCanvas({ onEngineReady, onCursorMove, onZoomChange, 
         tm.handleDragMove(coords.gx, coords.gy);
       }
     }
-  }, [onCursorMove, getGlobalCoords, toolManagerRef, hoverInspect, registryRef]);
+  }, [onCursorMove, getGlobalCoords, toolManagerRef, hoverInspect, registryRef, drawLassoOutline]);
 
   const handleMouseUp = useCallback((e: React.MouseEvent) => {
     if (e.button === 1 || e.button === 2) {
       isPanningRef.current = false;
     }
+
+    // Lasso complete
+    if (e.button === 0 && isLassoDrawingRef.current) {
+      isLassoDrawingRef.current = false;
+      clearLassoCanvas();
+      const points = lassoPointsRef.current;
+      lassoPointsRef.current = [];
+
+      if (points.length >= 3 && onLassoComplete) {
+        onLassoComplete(points);
+      } else if (points.length < 3 && onLassoShiftClick) {
+        // Tiny drag or single click — treat as single-province toggle
+        const coords = getGlobalCoords(e);
+        if (coords) {
+          onLassoShiftClick(coords.gx, coords.gy);
+        }
+      }
+      return;
+    }
+
     if (e.button === 0 && isPaintingRef.current) {
       isPaintingRef.current = false;
       const tm = toolManagerRef.current;
@@ -232,11 +359,17 @@ export default function MainCanvas({ onEngineReady, onCursorMove, onZoomChange, 
         tm.handleDragEnd();
       }
     }
-  }, [toolManagerRef]);
+  }, [toolManagerRef, onLassoComplete, onLassoShiftClick, getGlobalCoords, clearLassoCanvas]);
 
   const handleMouseLeave = useCallback(() => {
     isPanningRef.current = false;
     setTooltipData(null);
+    // Cancel lasso drawing on leave
+    if (isLassoDrawingRef.current) {
+      isLassoDrawingRef.current = false;
+      lassoPointsRef.current = [];
+      clearLassoCanvas();
+    }
     if (isPaintingRef.current) {
       isPaintingRef.current = false;
       const tm = toolManagerRef.current;
@@ -244,7 +377,7 @@ export default function MainCanvas({ onEngineReady, onCursorMove, onZoomChange, 
         tm.handleDragEnd();
       }
     }
-  }, [toolManagerRef]);
+  }, [toolManagerRef, clearLassoCanvas]);
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -253,7 +386,7 @@ export default function MainCanvas({ onEngineReady, onCursorMove, onZoomChange, 
   return (
     <div
       ref={containerRef}
-      style={{ flex: 1, position: 'relative', overflow: 'hidden', background: '#010409', cursor: (pickingEmpty || pickingLock || pickingColor) ? 'copy' : inspectorMode ? 'pointer' : 'crosshair' }}
+      style={{ flex: 1, position: 'relative', overflow: 'hidden', background: '#010409', cursor: (pickingEmpty || pickingLock || pickingColor || pickingGenerator) ? 'copy' : inspectorMode ? 'pointer' : lassoActive ? 'crosshair' : 'crosshair' }}
     >
       <canvas
         ref={canvasRef}
@@ -263,6 +396,19 @@ export default function MainCanvas({ onEngineReady, onCursorMove, onZoomChange, 
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseLeave}
         onContextMenu={handleContextMenu}
+      />
+
+      {/* Lasso drawing overlay — transparent 2D canvas on top of WebGL */}
+      <canvas
+        ref={lassoCanvasRef}
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: '100%',
+          height: '100%',
+          pointerEvents: 'none',
+        }}
       />
 
       {/* Hover Inspect tooltip */}

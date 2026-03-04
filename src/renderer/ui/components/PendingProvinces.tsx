@@ -2,32 +2,31 @@
  * PendingProvinces — 4th sidebar tab showing provinces created but not yet saved.
  *
  * Displays the pending province list with color swatches, IDs, and names.
- * Provides save options (which file stubs to generate) and a save button.
+ * Delete erases pixels from the map and reconciles IDs immediately.
+ * Saving happens only via the global Ctrl+S save.
  */
 
-import { theme, sectionHeading, dividerStyle } from '../theme';
+import { theme, sectionHeading } from '../theme';
 import { rgbToKey } from '@shared/types';
 import type { PendingSaveOptions } from '@shared/types';
 import type { PendingProvinceMap } from '@registry/pending-province-map';
 
 interface PendingProvincesProps {
   pendingMap: PendingProvinceMap;
-  onRemove: (colorKey: string) => void;
+  onDelete: (colorKey: string) => void;
   onEdit: (colorKey: string) => void;
+  modLoaded: boolean;
   saveOptions: PendingSaveOptions;
   onSaveOptionsChange: (options: PendingSaveOptions) => void;
-  onFlushSave: () => void;
-  modLoaded: boolean;
 }
 
 export default function PendingProvinces({
   pendingMap,
-  onRemove,
+  onDelete,
   onEdit,
+  modLoaded,
   saveOptions,
   onSaveOptionsChange,
-  onFlushSave,
-  modLoaded,
 }: PendingProvincesProps) {
   const entries = pendingMap.getAll();
 
@@ -39,6 +38,11 @@ export default function PendingProvinces({
       </div>
     );
   }
+
+  const toggleOption = (key: keyof PendingSaveOptions) => {
+    if (key === 'definitionCsv') return; // mandatory
+    onSaveOptionsChange({ ...saveOptions, [key]: !saveOptions[key] });
+  };
 
   return (
     <div>
@@ -77,9 +81,9 @@ export default function PendingProvinces({
                     ✎
                   </button>
                   <button
-                    onClick={() => onRemove(key)}
+                    onClick={() => onDelete(key)}
                     style={deleteBtnStyle}
-                    title="Remove pending province"
+                    title="Delete pending province (erases pixels)"
                   >
                     ✕
                   </button>
@@ -88,76 +92,45 @@ export default function PendingProvinces({
             })}
           </div>
 
-          <div style={dividerStyle()} />
-
-          <h4 style={optionsHeadingStyle}>Save Options</h4>
-          <div style={optionsContainerStyle}>
-            <CheckboxRow
-              label="Definition.csv entries"
-              checked={saveOptions.definitionCsv}
-              onChange={() => {/* always true — mandatory */}}
-              disabled
-            />
-            <CheckboxRow
-              label="History stubs"
-              checked={saveOptions.historyStubs}
-              onChange={v => onSaveOptionsChange({ ...saveOptions, historyStubs: v })}
-            />
-            <CheckboxRow
-              label="Landed titles entries"
-              checked={saveOptions.landedTitles}
-              onChange={v => onSaveOptionsChange({ ...saveOptions, landedTitles: v })}
-            />
-            <CheckboxRow
-              label="Terrain entries"
-              checked={saveOptions.terrainEntries}
-              onChange={v => onSaveOptionsChange({ ...saveOptions, terrainEntries: v })}
-            />
+          {/* Save options — controls what gets written on Ctrl+S */}
+          <div style={saveOptionsContainerStyle}>
+            <div style={saveOptionsHeaderStyle}>On Save (Ctrl+S)</div>
+            <label style={checkboxRowStyle}>
+              <input type="checkbox" checked disabled style={checkboxStyle} />
+              <span style={checkboxLabelStyle}>definition.csv entries</span>
+              <span style={mandatoryBadgeStyle}>required</span>
+            </label>
+            <label style={checkboxRowStyle}>
+              <input
+                type="checkbox"
+                checked={saveOptions.historyStubs}
+                onChange={() => toggleOption('historyStubs')}
+                style={checkboxStyle}
+              />
+              <span style={checkboxLabelStyle}>History file stubs</span>
+            </label>
+            <label style={checkboxRowStyle}>
+              <input
+                type="checkbox"
+                checked={saveOptions.landedTitles}
+                onChange={() => toggleOption('landedTitles')}
+                style={checkboxStyle}
+              />
+              <span style={checkboxLabelStyle}>Landed titles entries</span>
+            </label>
+            <label style={checkboxRowStyle}>
+              <input
+                type="checkbox"
+                checked={saveOptions.terrainEntries}
+                onChange={() => toggleOption('terrainEntries')}
+                style={checkboxStyle}
+              />
+              <span style={checkboxLabelStyle}>Terrain entries</span>
+            </label>
           </div>
-
-          <button onClick={onFlushSave} style={saveBtnStyle}>
-            Save All ({entries.length} pending)
-          </button>
-
-          <p style={infoStyle}>IDs are reconciled sequentially before save</p>
         </>
       )}
     </div>
-  );
-}
-
-/* ── CheckboxRow ──────────────────────────────────────── */
-
-function CheckboxRow({
-  label,
-  checked,
-  onChange,
-  disabled,
-}: {
-  label: string;
-  checked: boolean;
-  onChange: (value: boolean) => void;
-  disabled?: boolean;
-}) {
-  return (
-    <label style={{
-      display: 'flex',
-      alignItems: 'center',
-      gap: theme.space.md,
-      cursor: disabled ? 'not-allowed' : 'pointer',
-      opacity: disabled ? 0.5 : 1,
-      fontFamily: theme.font.family,
-      fontSize: theme.font.sizeMd,
-      color: theme.text.secondary,
-    }}>
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={() => onChange(!checked)}
-        disabled={disabled}
-      />
-      {label}
-    </label>
   );
 }
 
@@ -240,38 +213,44 @@ const deleteBtnStyle: React.CSSProperties = {
   flexShrink: 0,
 };
 
-const optionsHeadingStyle: React.CSSProperties = {
-  color: theme.text.primary,
-  fontSize: theme.font.sizeLg,
-  fontWeight: 600,
-  fontFamily: theme.font.family,
-  margin: `0 0 ${theme.space.md}px`,
-};
-
-const optionsContainerStyle: React.CSSProperties = {
-  display: 'flex',
-  flexDirection: 'column',
-  gap: theme.space.sm + 2,
-  marginBottom: theme.space.lg,
-};
-
-const saveBtnStyle: React.CSSProperties = {
-  width: '100%',
-  padding: `${theme.space.md}px ${theme.space.xl}px`,
+const saveOptionsContainerStyle: React.CSSProperties = {
+  marginTop: theme.space.lg,
+  padding: theme.space.md,
+  backgroundColor: theme.bg.base,
+  border: `1px solid ${theme.border.muted}`,
   borderRadius: theme.radius.sm,
-  fontSize: theme.font.sizeMd,
-  fontFamily: theme.font.family,
-  fontWeight: 500,
-  cursor: 'pointer',
-  border: 'none',
-  backgroundColor: theme.accent.green,
-  color: '#fff',
-  marginBottom: theme.space.md,
 };
 
-const infoStyle: React.CSSProperties = {
-  color: theme.text.muted,
-  fontSize: theme.font.sizeXs,
+const saveOptionsHeaderStyle: React.CSSProperties = {
+  color: theme.text.secondary,
+  fontSize: theme.font.sizeSm,
   fontFamily: theme.font.family,
-  textAlign: 'center',
+  fontWeight: 600,
+  marginBottom: theme.space.sm,
+};
+
+const checkboxRowStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: theme.space.sm,
+  padding: `${theme.space.xs}px 0`,
+  cursor: 'pointer',
+  fontFamily: theme.font.family,
+};
+
+const checkboxStyle: React.CSSProperties = {
+  accentColor: theme.accent.blue,
+  margin: 0,
+  flexShrink: 0,
+};
+
+const checkboxLabelStyle: React.CSSProperties = {
+  color: theme.text.primary,
+  fontSize: theme.font.sizeSm,
+};
+
+const mandatoryBadgeStyle: React.CSSProperties = {
+  fontSize: theme.font.sizeXs,
+  color: theme.text.muted,
+  fontStyle: 'italic',
 };
