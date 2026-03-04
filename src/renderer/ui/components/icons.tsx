@@ -183,6 +183,28 @@ export function InspectIcon({ size = defaults.size, color = defaults.color, styl
   );
 }
 
+export function HeightmapIcon({ size = defaults.size, color = defaults.color, style }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
+      stroke={color} strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" style={style}>
+      <path d="M3 20l5-7 4 4 4-8 5 11" />
+      <path d="M8 6l2-3 2 3" />
+      <path d="M15 8l1.5-2L18 8" />
+    </svg>
+  );
+}
+
+export function LassoIcon({ size = defaults.size, color = defaults.color, style }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
+      stroke={color} strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" style={style}>
+      <path d="M7 22c-2.76 0-5-1.79-5-4s2.24-4 5-4 5 1.79 5 4" />
+      <path d="M12 18c0-4.42 2.69-8 6-8s6 3.58 6 8" />
+      <ellipse cx="12" cy="8" rx="9" ry="5" />
+    </svg>
+  );
+}
+
 export function BordersIcon({ size = defaults.size, color = defaults.color, style }: IconProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
@@ -190,6 +212,20 @@ export function BordersIcon({ size = defaults.size, color = defaults.color, styl
       <path d="M3 3h18v18H3z" />
       <path d="M12 3v18" />
       <path d="M3 12h18" />
+    </svg>
+  );
+}
+
+export function PaletteIcon({ size = defaults.size, color = defaults.color, style }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
+      stroke={color} strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" style={style}>
+      <circle cx="12" cy="12" r="10" />
+      <circle cx="8" cy="10" r="1.5" fill={color} stroke="none" />
+      <circle cx="12" cy="7" r="1.5" fill={color} stroke="none" />
+      <circle cx="16" cy="10" r="1.5" fill={color} stroke="none" />
+      <circle cx="9" cy="14" r="1.5" fill={color} stroke="none" />
+      <path d="M15 14c1 0 2 .5 2 2s-1.5 3-4 3-3.5-1-3.5-2 1-1.5 2-1.5h3.5" />
     </svg>
   );
 }

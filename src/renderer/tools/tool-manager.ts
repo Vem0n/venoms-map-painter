@@ -29,6 +29,10 @@ export interface PaintEvent {
   warning?: string;
   /** If a brand-new color was auto-registered during this paint */
   newProvince?: { id: number; color: RGB; name: string };
+  /** Tile indices affected by this paint (for sector manager rescan) */
+  affectedTiles?: Set<number>;
+  /** Bounding box of affected pixels in global coords (for sector manager rescanByBounds) */
+  bounds?: { minGx: number; minGy: number; maxGx: number; maxGy: number };
 }
 
 export class ToolManager {
@@ -58,6 +62,12 @@ export class ToolManager {
 
   /** Before-snapshots taken at drag start */
   private dragBeforeSnapshots: Map<number, Uint8ClampedArray> = new Map();
+
+  /** Bounding box of all pixels touched during the current drag */
+  private dragMinGx = 0;
+  private dragMinGy = 0;
+  private dragMaxGx = 0;
+  private dragMaxGy = 0;
 
   /** Callback for paint events (UI updates) */
   private onPaintEvent: ((event: PaintEvent) => void) | null = null;
@@ -221,6 +231,12 @@ export class ToolManager {
     this.dragAffectedTiles.clear();
     this.dragBeforeSnapshots.clear();
 
+    // Initialize drag bounding box
+    this.dragMinGx = gx - this.brushRadius;
+    this.dragMinGy = gy - this.brushRadius;
+    this.dragMaxGx = gx + this.brushRadius;
+    this.dragMaxGy = gy + this.brushRadius;
+
     // Snapshot tiles around the initial point preemptively
     this.snapshotTilesAroundPoint(gx, gy, this.brushRadius);
 
@@ -246,6 +262,12 @@ export class ToolManager {
     if (!this.dragging || !this.lastDragPos) return;
 
     const { gx: lastGx, gy: lastGy } = this.lastDragPos;
+
+    // Expand drag bounding box
+    this.dragMinGx = Math.min(this.dragMinGx, gx - this.brushRadius);
+    this.dragMinGy = Math.min(this.dragMinGy, gy - this.brushRadius);
+    this.dragMaxGx = Math.max(this.dragMaxGx, gx + this.brushRadius);
+    this.dragMaxGy = Math.max(this.dragMaxGy, gy + this.brushRadius);
 
     // Snapshot any new tiles that the line might touch
     this.snapshotTilesAlongLine(lastGx, lastGy, gx, gy, this.brushRadius);
@@ -294,13 +316,22 @@ export class ToolManager {
     };
     this.undoManager.push(action);
 
+    const dragTiles = new Set(this.dragAffectedTiles);
+    const bounds = {
+      minGx: this.dragMinGx, minGy: this.dragMinGy,
+      maxGx: this.dragMaxGx, maxGy: this.dragMaxGy,
+    };
+
     this.dragAffectedTiles.clear();
     this.dragBeforeSnapshots.clear();
 
     const newProvince = this.activeTool !== 'eraser'
       ? this.maybeAutoRegister(this.activeColor)
       : undefined;
-    const event: PaintEvent = { tool: this.activeTool, pixelCount: -1, newProvince };
+    const event: PaintEvent = {
+      tool: this.activeTool, pixelCount: -1, newProvince,
+      affectedTiles: dragTiles, bounds,
+    };
     this.onPaintEvent?.(event);
     return event;
   }
@@ -402,7 +433,10 @@ export class ToolManager {
     this.undoManager.push(action);
 
     const newProvince = this.maybeAutoRegister(this.activeColor);
-    const event: PaintEvent = { tool: 'flood-fill', pixelCount: result.pixelCount, warning, newProvince };
+    const event: PaintEvent = {
+      tool: 'flood-fill', pixelCount: result.pixelCount, warning, newProvince,
+      affectedTiles: result.affectedTiles,
+    };
     this.onPaintEvent?.(event);
     return event;
   }
@@ -432,7 +466,14 @@ export class ToolManager {
     this.undoManager.push(action);
 
     const newProvince = this.maybeAutoRegister(this.activeColor);
-    const event: PaintEvent = { tool: 'brush', pixelCount: result.pixelCount, warning, newProvince };
+    const event: PaintEvent = {
+      tool: 'brush', pixelCount: result.pixelCount, warning, newProvince,
+      affectedTiles: result.affectedTiles,
+      bounds: {
+        minGx: gx - this.brushRadius, minGy: gy - this.brushRadius,
+        maxGx: gx + this.brushRadius, maxGy: gy + this.brushRadius,
+      },
+    };
     this.onPaintEvent?.(event);
     return event;
   }
@@ -462,7 +503,14 @@ export class ToolManager {
     };
     this.undoManager.push(action);
 
-    const event: PaintEvent = { tool: 'eraser', pixelCount: result.pixelCount };
+    const event: PaintEvent = {
+      tool: 'eraser', pixelCount: result.pixelCount,
+      affectedTiles: result.affectedTiles,
+      bounds: {
+        minGx: gx - this.brushRadius, minGy: gy - this.brushRadius,
+        maxGx: gx + this.brushRadius, maxGy: gy + this.brushRadius,
+      },
+    };
     this.onPaintEvent?.(event);
     return event;
   }

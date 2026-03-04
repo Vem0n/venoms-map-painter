@@ -19,6 +19,7 @@ const toolLabels: Record<ToolType, string> = {
   'brush': 'Brush',
   'eraser': 'Eraser',
   'border-paint': 'Border Paint',
+  'lasso': 'Lasso Select',
 };
 
 export default function StatusBar({ cursorPos, zoomLevel, status, activeTool, activeColor, provinceCount }: StatusBarProps) {

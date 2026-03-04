@@ -29,7 +29,7 @@ Additionally the app is ***stateless***, you can generate files here, change the
 
 ## Quick Start
 
-1. Download from the [latest release](https://github.com/ven0m/map-painter/releases) (Windows, macOS, Linux)
+1. Download from the [latest release](https://github.com/Vem0n/venoms-map-painter/releases) (Windows, macOS, Linux)
 2. Launch the app and click **Open Map**
 3. Select your CK3 mod root directory (the one containing `map_data/`)
 4. Paint provinces, create new ones, edit existing data
@@ -120,6 +120,18 @@ Output goes to `release/`. Builds for Windows (NSIS + portable), macOS (DMG + ZI
 - **Culture and religion not shown on some provinces**: This is intended behavior. As per the modding wiki, culture and religion are county-scoped — a county inherits them from the first barony defined in its hierarchy. Since VMP only reads data present in your files, it will only display culture and religion IDs on baronies that have them explicitly defined. Future releases may improve this in the inspector, as VMP already tracks the full title hierarchy.
 
 - **Indentation when appending to existing counties/duchies**: The new barony entry may have slightly off indentation when inserted into an existing `landed_titles` block. Auto-inserting into an existing hierarchy is a delicate operation — VMP does its best to preserve indentation, existing comments, and correct placement, but it isn't perfect yet. This is purely cosmetic and does not affect how the game loads your province.
+
+- **Saving provinces without filling in details produces empty stubs**: Provinces saved directly from the Pending tab without filling in a name, culture, religion, or holding will load in the game but may produce unreliable results depending on your mod's setup. The generated `history/provinces/` and `landed_titles` entries will be bare stubs — they won't crash the game, but CK3 may apply unexpected fallback behavior (inherited culture/religion, missing title data, etc.). It is strongly recommended to fill in at least a name and holding type before saving or only generate definitions.csv entries, and flesh out culture/religion either in VMP or directly in your text editor before testing in-game.
+
+## Disclaimer
+
+VMP is scoped to province painting and province file generation. It does **not** handle:
+
+- **`map_data/default.map`** — Sea zones, impassable terrain, river/lake province lists, and other map classification entries must be edited manually or via another tool. VMP's reconcile operation can remap province IDs in `default.map` when renumbering, but it is an experimental feature and should not be relied on for this process.
+- **Geographical region mappings** — `common/geographical_region/*.txt` files that group provinces into named regions are not touched by VMP. These must be maintained manually.
+- **Title-to-province assignments beyond baronies** — VMP inserts barony entries into `landed_titles`, but linking counties to duchies, kingdoms, and empires in the de jure hierarchy is left to you.
+
+These are intentional scope decisions. VMP is a painting and stub-generation tool — the broader map structure should be handled by you directly or with other tooling of your choice.
 
 ---
 

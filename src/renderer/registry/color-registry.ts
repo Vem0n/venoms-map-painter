@@ -8,6 +8,7 @@
  */
 
 import { RGB, ProvinceData, rgbToKey } from '@shared/types';
+import { SectorManager, TileBufferReader } from './sector-manager';
 
 /**
  * Golden ratio conjugate — used for hue stepping to get visually distinct colors.
@@ -34,12 +35,16 @@ export class ColorRegistry {
   /** Hue cursor for golden ratio color generation */
   private hueCursor: number;
 
+  /** Spatial index: sector-based province color lookup */
+  private sectors: SectorManager;
+
   constructor() {
     this.colorToProvince = new Map();
     this.idToProvince = new Map();
     this.usedColors = new Set();
     this.nextId = 1;
     this.hueCursor = Math.random(); // random start for visual variety
+    this.sectors = new SectorManager();
   }
 
   /**
@@ -49,6 +54,7 @@ export class ColorRegistry {
     this.colorToProvince.clear();
     this.idToProvince.clear();
     this.usedColors.clear();
+    this.sectors.clear();
 
     let maxId = 0;
     for (const province of provinces) {
@@ -275,7 +281,32 @@ export class ColorRegistry {
     this.colorToProvince.delete(key);
     this.idToProvince.delete(id);
     this.usedColors.delete(key);
+    this.sectors.removeColor(key);
     this.sortedByName = this.sortedByName.filter(p => p.id !== id);
+    return true;
+  }
+
+  /**
+   * Update a province's RGB color. Remaps all internal lookups (color→province,
+   * usedColors) from the old color to the new one and mutates ProvinceData.color
+   * in place. Returns false if old color not found or new color already in use.
+   */
+  updateProvinceColor(oldColor: RGB, newColor: RGB): boolean {
+    const oldKey = rgbToKey(oldColor);
+    const newKey = rgbToKey(newColor);
+    if (oldKey === newKey) return true; // no-op
+    if (!this.colorToProvince.has(oldKey)) return false;
+    if (this.usedColors.has(newKey)) return false;
+
+    const province = this.colorToProvince.get(oldKey)!;
+    this.colorToProvince.delete(oldKey);
+    this.usedColors.delete(oldKey);
+
+    province.color = { ...newColor };
+    this.colorToProvince.set(newKey, province);
+    this.usedColors.add(newKey);
+    this.sectors.remapColor(oldKey, newKey);
+
     return true;
   }
 
@@ -305,6 +336,32 @@ export class ColorRegistry {
 
     this.sortedByName = Array.from(this.idToProvince.values())
       .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+  }
+
+  /**
+   * Initialize the sector spatial index for the loaded map.
+   * Call after loadImage() on TileEngine and loadFromDefinitions() on this registry.
+   */
+  initSectors(
+    mapWidth: number,
+    mapHeight: number,
+    tilesX: number,
+    tilesY: number,
+    readTileBuffer: TileBufferReader,
+  ): void {
+    this.sectors.init(mapWidth, mapHeight, tilesX, tilesY, readTileBuffer);
+  }
+
+  /** Populate all sectors by scanning tile buffers. Async/chunked. */
+  async populateSectorsAsync(
+    onProgress?: (scanned: number, total: number) => void,
+  ): Promise<void> {
+    await this.sectors.populateAsync(onProgress);
+  }
+
+  /** Get the SectorManager for direct query access. */
+  getSectorManager(): SectorManager {
+    return this.sectors;
   }
 
   /**

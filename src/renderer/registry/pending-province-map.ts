@@ -7,7 +7,8 @@
  */
 
 import { rgbToKey } from '@shared/types';
-import type { PendingProvince } from '@shared/types';
+import type { RGB, PendingProvince } from '@shared/types';
+import type { ColorRegistry } from './color-registry';
 
 export class PendingProvinceMap {
   private entries: Map<string, PendingProvince> = new Map();
@@ -42,17 +43,52 @@ export class PendingProvinceMap {
   }
 
   /**
-   * Renumber all pending IDs sequentially starting from nextBaseId.
-   * Used before save to fill gaps from deletions.
+   * Re-key an entry when its color changes (e.g., harmonize).
+   * Updates both the map key and the entry's color field.
+   * Returns true if an entry was found and remapped.
    */
-  reconcileIds(nextBaseId: number): void {
+  remapColor(oldColorKey: string, newColor: RGB): boolean {
+    const entry = this.entries.get(oldColorKey);
+    if (!entry) return false;
+    this.entries.delete(oldColorKey);
+    entry.color = { ...newColor };
+    const newKey = rgbToKey(newColor);
+    this.entries.set(newKey, entry);
+    return true;
+  }
+
+  /**
+   * Renumber all pending IDs sequentially starting from nextBaseId.
+   * Returns the list of ID remaps performed (empty if all IDs were already sequential).
+   */
+  reconcileIds(nextBaseId: number): Array<{ oldId: number; newId: number }> {
     const sorted = this.getAll();
+    const remaps: Array<{ oldId: number; newId: number }> = [];
     this.entries.clear();
     let currentId = nextBaseId;
     for (const entry of sorted) {
+      if (entry.id !== currentId) {
+        remaps.push({ oldId: entry.id, newId: currentId });
+      }
       entry.id = currentId++;
       this.entries.set(rgbToKey(entry.color), entry);
     }
+    return remaps;
+  }
+
+  /**
+   * Derive the max committed (non-pending) province ID from a registry.
+   * Scans all provinces in the registry and excludes those present in this pending map.
+   */
+  static deriveMaxCommittedId(registry: ColorRegistry, pendingMap: PendingProvinceMap): number {
+    let maxId = 0;
+    for (const province of registry.getAllProvinces()) {
+      const key = rgbToKey(province.color);
+      if (!pendingMap.has(key) && province.id > maxId) {
+        maxId = province.id;
+      }
+    }
+    return maxId;
   }
 
   /** Clear all pending entries (e.g., after successful save or mod load). */

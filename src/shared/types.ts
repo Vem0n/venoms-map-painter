@@ -89,7 +89,7 @@ export interface CameraState {
 }
 
 /** Paint tool types */
-export type ToolType = 'flood-fill' | 'brush' | 'eraser' | 'border-paint';
+export type ToolType = 'flood-fill' | 'brush' | 'eraser' | 'border-paint' | 'lasso';
 
 /** Mod directory structure after loading */
 export interface ModData {
@@ -169,6 +169,8 @@ export interface UndoAction {
   pendingRemoved?: PendingProvince[];
   /** Pending provinces added by this action (undo removes them, redo re-adds) */
   pendingAdded?: PendingProvince[];
+  /** Color remaps applied by this action (for harmonize undo/redo). Array of [oldColor, newColor]. */
+  colorRemaps?: [RGB, RGB][];
 }
 
 /** A province created in the current session but not yet written to disk */
@@ -193,4 +195,36 @@ export interface PendingSaveOptions {
   landedTitles: boolean;
   /** Write common/province_terrain/ entries */
   terrainEntries: boolean;
+}
+
+/** Metadata for a saved draft (stored as draft.json in VMP-Drafts/) */
+export interface DraftMetadata {
+  /** User-provided name */
+  name: string;
+  /** ISO 8601 timestamp */
+  timestamp: string;
+  /** Absolute path to the mod root directory */
+  modPath: string;
+  /** Map width in pixels */
+  mapWidth: number;
+  /** Map height in pixels */
+  mapHeight: number;
+  /** Pending provinces at time of draft save */
+  pendingProvinces: PendingProvince[];
+  /** Save options state at time of draft save */
+  pendingSaveOptions: PendingSaveOptions;
+  /** User-defined empty colors */
+  emptyColors: RGB[];
+  /** Active province lock color, or null */
+  lockedColor: RGB | null;
+}
+
+/** Summary info for draft list display */
+export interface DraftSummary {
+  /** User-provided name */
+  name: string;
+  /** ISO 8601 timestamp */
+  timestamp: string;
+  /** Folder name within VMP-Drafts/ */
+  folderName: string;
 }

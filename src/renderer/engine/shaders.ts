@@ -41,12 +41,17 @@ void main() {
 }
 `;
 
-/** Fragment shader: samples the tile texture, optionally draws tile grid */
+/** Fragment shader: samples the tile texture, optionally blends overlay + heightmap + grid */
 export const TILE_FRAGMENT_SHADER = `#version 300 es
 precision highp float;
 
 uniform sampler2D u_tileTexture;
+uniform sampler2D u_overlayTexture;
+uniform sampler2D u_heightmapTexture;
 uniform bool u_showGrid;
+uniform bool u_showOverlay;
+uniform bool u_showHeightmap;
+uniform float u_heightmapOpacity;
 uniform vec2 u_tileSize;
 
 in vec2 v_texCoord;
@@ -54,6 +59,20 @@ out vec4 fragColor;
 
 void main() {
     fragColor = texture(u_tileTexture, v_texCoord);
+
+    // Heightmap overlay — blends below the voronoi overlay so boundaries stay visible
+    if (u_showHeightmap) {
+        vec4 hm = texture(u_heightmapTexture, v_texCoord);
+        fragColor = mix(fragColor, hm, u_heightmapOpacity);
+    }
+
+    // Overlay blending (Voronoi preview boundaries)
+    if (u_showOverlay) {
+        vec4 overlay = texture(u_overlayTexture, v_texCoord);
+        if (overlay.a > 0.0) {
+            fragColor = mix(fragColor, overlay, overlay.a);
+        }
+    }
 
     if (u_showGrid) {
         // Draw a 1-pixel border at tile edges

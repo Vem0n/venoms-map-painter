@@ -9,9 +9,9 @@ import React, { useState, useRef, useCallback, useEffect } from 'react';
 import type { ToolType, RGB } from '@shared/types';
 import { theme } from '../theme';
 import {
-  FloodFillIcon, BrushIcon, EraserIcon, EyedropperIcon,
+  FloodFillIcon, BrushIcon, EraserIcon, EyedropperIcon, LassoIcon,
   BordersIcon, CircleIcon, LockIcon, LockOpenIcon, GridIcon, InspectIcon,
-  UndoIcon, RedoIcon, XIcon,
+  HeightmapIcon, UndoIcon, RedoIcon, XIcon,
 } from './icons';
 
 interface VerticalToolBarProps {
@@ -39,6 +39,11 @@ interface VerticalToolBarProps {
   onToggleGrid: () => void;
   hoverInspect: boolean;
   onToggleHoverInspect: () => void;
+  heightmapVisible: boolean;
+  heightmapAvailable: boolean;
+  heightmapOpacity: number;
+  onToggleHeightmap: () => void;
+  onHeightmapOpacityChange: (opacity: number) => void;
   mapLoaded: boolean;
 }
 
@@ -263,6 +268,131 @@ function BrushSizeFlyout({ brushRadius, onBrushRadiusChange }: {
   );
 }
 
+/* ── HeightmapOpacityFlyout ─────────────────────────── */
+
+function HeightmapOpacityFlyout({ opacity, onOpacityChange }: {
+  opacity: number;
+  onOpacityChange: (v: number) => void;
+}) {
+  const [hovered, setHovered] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const [mounted, setMounted] = useState(false);
+  const hideTimerRef = useRef<ReturnType<typeof setTimeout>>();
+
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => setMounted(true));
+    return () => cancelAnimationFrame(frame);
+  }, []);
+
+  const isVisible = hovered || dragging;
+
+  const handleEnter = useCallback(() => {
+    clearTimeout(hideTimerRef.current);
+    setHovered(true);
+  }, []);
+
+  const handleLeave = useCallback(() => {
+    hideTimerRef.current = setTimeout(() => setHovered(false), 200);
+  }, []);
+
+  const handlePointerDown = useCallback(() => setDragging(true), []);
+  useEffect(() => {
+    if (!dragging) return;
+    const up = () => setDragging(false);
+    window.addEventListener('pointerup', up);
+    return () => window.removeEventListener('pointerup', up);
+  }, [dragging]);
+
+  const pct = Math.round(opacity * 100);
+
+  return (
+    <div
+      style={{ position: 'relative' }}
+      onMouseEnter={handleEnter}
+      onMouseLeave={handleLeave}
+    >
+      {/* Trigger — small opacity indicator */}
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        margin: '2px 4px',
+        padding: '4px 0',
+        cursor: 'pointer',
+        borderRadius: theme.radius.sm,
+        background: isVisible ? theme.toolbar.hoverBg : 'transparent',
+        transition: theme.transition.fast,
+      }}>
+        <div style={{
+          width: 20,
+          fontSize: 8,
+          fontWeight: 600,
+          fontFamily: theme.font.mono,
+          color: theme.text.secondary,
+          textAlign: 'center',
+          lineHeight: 1,
+        }}>
+          {pct}%
+        </div>
+      </div>
+
+      {/* Floating panel */}
+      <div style={{
+        position: 'absolute',
+        left: 40,
+        top: '50%',
+        transform: `translateY(-50%) translateX(${mounted && isVisible ? '0px' : '-8px'})`,
+        opacity: mounted && isVisible ? 1 : 0,
+        pointerEvents: isVisible ? 'auto' : 'none',
+        transition: 'opacity 0.2s ease-out, transform 0.2s ease-out',
+        zIndex: 1000,
+      }}>
+        <div style={{
+          background: theme.bg.elevated,
+          border: `1px solid ${theme.border.default}`,
+          borderRadius: theme.radius.md,
+          boxShadow: theme.shadow.dropdown,
+          padding: '12px 14px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          whiteSpace: 'nowrap',
+        }}>
+          <div style={{
+            color: theme.text.muted,
+            fontSize: theme.font.sizeXs,
+            textTransform: 'uppercase',
+            letterSpacing: '0.5px',
+            flexShrink: 0,
+          }}>
+            Opacity
+          </div>
+
+          <input
+            type="range"
+            min={0} max={100}
+            value={pct}
+            onChange={e => onOpacityChange(parseInt(e.target.value, 10) / 100)}
+            onPointerDown={handlePointerDown}
+            style={{ width: 120, display: 'block', cursor: 'pointer' }}
+          />
+
+          <div style={{
+            color: theme.text.primary,
+            fontSize: theme.font.sizeMd,
+            fontFamily: theme.font.mono,
+            fontWeight: 600,
+            minWidth: 32,
+            textAlign: 'right',
+          }}>
+            {pct}%
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── Main VerticalToolBar ───────────────────────────── */
 
 export default function VerticalToolBar({
@@ -275,6 +405,8 @@ export default function VerticalToolBar({
   pickingColor, onTogglePickColor,
   gridEnabled, onToggleGrid,
   hoverInspect, onToggleHoverInspect,
+  heightmapVisible, heightmapAvailable, heightmapOpacity,
+  onToggleHeightmap, onHeightmapOpacityChange,
   mapLoaded,
 }: VerticalToolBarProps) {
   const showBrushFlyout = (activeTool === 'brush' || activeTool === 'eraser') && mapLoaded;
@@ -320,6 +452,14 @@ export default function VerticalToolBar({
         label={pickingColor ? 'Click map...' : 'Eyedropper'}
         active={pickingColor}
         onClick={onTogglePickColor}
+        disabled={!mapLoaded}
+      />
+      <ToolButton
+        icon={<LassoIcon size={16} />}
+        label="Lasso Select"
+        shortcut="L"
+        active={activeTool === 'lasso'}
+        onClick={() => onToolChange('lasso')}
         disabled={!mapLoaded}
       />
 
@@ -400,6 +540,21 @@ export default function VerticalToolBar({
         onClick={onToggleHoverInspect}
         disabled={!mapLoaded}
       />
+      <ToolButton
+        icon={<HeightmapIcon size={16} />}
+        label={!heightmapAvailable ? 'No Heightmap' : heightmapVisible ? 'Heightmap: ON' : 'Heightmap: OFF'}
+        toggled={heightmapVisible}
+        onClick={onToggleHeightmap}
+        disabled={!mapLoaded || !heightmapAvailable}
+      />
+
+      {/* Heightmap opacity — floating popout on hover (only when heightmap is visible) */}
+      {heightmapVisible && heightmapAvailable && (
+        <HeightmapOpacityFlyout
+          opacity={heightmapOpacity}
+          onOpacityChange={onHeightmapOpacityChange}
+        />
+      )}
 
       {/* Brush size — floating popout on hover */}
       {showBrushFlyout && (

@@ -1,6 +1,6 @@
 /** Type declaration for the preload API exposed on window.mapPainter */
 
-import type { LoadModResult, ProvinceData, CreateProvinceRequest, LandedTitleNode, ReconcileRequest, PendingProvince, PendingSaveOptions } from './types';
+import type { LoadModResult, ProvinceData, CreateProvinceRequest, LandedTitleNode, ReconcileRequest, PendingProvince, PendingSaveOptions, DraftMetadata, DraftSummary, RGB } from './types';
 
 interface MapPainterAPI {
   selectDirectory(): Promise<string | null>;
@@ -15,6 +15,26 @@ interface MapPainterAPI {
   listHistoryFiles(): Promise<string[]>;
   flushPendingProvinces(data: { provinces: PendingProvince[]; options: PendingSaveOptions }): Promise<void>;
   reconcileProvinces(data: ReconcileRequest): Promise<void>;
+  saveDraft(
+    modPath: string,
+    name: string,
+    rgbaBuffer: Uint8Array,
+    width: number,
+    height: number,
+    metadata: {
+      pendingProvinces: PendingProvince[];
+      pendingSaveOptions: PendingSaveOptions;
+      emptyColors: RGB[];
+      lockedColor: RGB | null;
+    },
+  ): Promise<void>;
+  listDrafts(modPath: string): Promise<DraftSummary[]>;
+  loadDraftImage(modPath: string, folderName: string): Promise<{ buffer: Uint8Array; width: number; height: number }>;
+  loadDraftMetadata(modPath: string, folderName: string): Promise<DraftMetadata>;
+  deleteDraft(modPath: string, folderName: string): Promise<void>;
+  loadHeightmap(modPath: string): Promise<{ buffer: Uint8Array; width: number; height: number } | null>;
+  onCheckBeforeClose(callback: () => void): () => void;
+  confirmClose(): void;
 }
 
 declare global {

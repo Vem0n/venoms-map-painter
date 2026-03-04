@@ -1,8 +1,9 @@
 /**
- * App — Root React component.
+ * App — Root React component (composition root).
  *
  * Layout: TopBar (36px) + VerticalToolBar (40px) | MainCanvas | Right Panel (320px) + StatusBar (24px)
- * Manages the TileEngine lifecycle, ToolManager, ColorRegistry, and UndoManager.
+ * State + handlers are extracted into custom hooks in ./hooks/.
+ * This file wires hooks together and renders the JSX template.
  */
 
 import { useState, useCallback, useRef, useEffect } from 'react';
@@ -21,101 +22,207 @@ import ProvinceSearch from './components/ProvinceSearch';
 import ReconcileDialog from './components/ReconcileDialog';
 import PendingOrphanDialog from './components/PendingOrphanDialog';
 import PendingProvinces from './components/PendingProvinces';
+import SaveDraftDialog from './components/SaveDraftDialog';
+import DraftListDialog from './components/DraftListDialog';
+import UnsavedDraftDialog from './components/UnsavedDraftDialog';
+import LoadingOverlay from './components/LoadingOverlay';
+import ProvinceGenerator from './components/ProvinceGenerator';
+import SelectionActionBar from './components/SelectionActionBar';
+import SectorMapDrawer from './components/SectorMapDrawer';
+import IdDriftDialog from './components/IdDriftDialog';
 import { theme } from './theme';
-import type { ToolType, RGB, ProvinceData, LandedTitleNode, CreateProvinceRequest, PendingProvince, PendingSaveOptions } from '@shared/types';
+import type { ToolType, RGB, CreateProvinceRequest, PendingProvince } from '@shared/types';
 import { rgbToKey } from '@shared/types';
-import { MAX_ZOOM } from '@shared/constants';
-import { detectOrphans, buildIdRemap } from '../reconciliation/reconcile';
-import type { OrphanedParent } from '../reconciliation/reconcile';
 import { PendingProvinceMap } from '@registry/pending-province-map';
 
-type SidebarMode = 'painting' | 'inspector' | 'creator' | 'pending';
+// Hooks
+import { useViewportSettings } from './hooks/useViewportSettings';
+import { useLassoSelection } from './hooks/useLassoSelection';
+import { usePaintingTools } from './hooks/usePaintingTools';
+import { useColorPicking } from './hooks/useColorPicking';
+import { useUndoRedo } from './hooks/useUndoRedo';
+import { useProvinceInspector } from './hooks/useProvinceInspector';
+import { usePendingProvinces } from './hooks/usePendingProvinces';
+import { useSaveReconciliation } from './hooks/useSaveReconciliation';
+import { useVoronoiGenerator } from './hooks/useVoronoiGenerator';
+import { useDraftSaveLoad } from './hooks/useDraftSaveLoad';
+import { useMapLoading } from './hooks/useMapLoading';
 
 export default function App() {
   const [status, setStatus] = useState('No map loaded');
-  const [cursorPos, setCursorPos] = useState<{ gx: number; gy: number } | null>(null);
-  const [zoomLevel, setZoomLevel] = useState(1.0);
-  const [loading, setLoading] = useState(false);
-  const [gridEnabled, setGridEnabled] = useState(false);
-  const [activeTool, setActiveTool] = useState<ToolType>('flood-fill');
-  const [activeColor, setActiveColor] = useState<RGB>({ r: 255, g: 0, b: 0 });
-  const [brushRadius, setBrushRadius] = useState(3);
-  const [respectBorders, setRespectBorders] = useState(true);
-  const [pickingEmpty, setPickingEmpty] = useState(false);
-  const [emptyColors, setEmptyColors] = useState<RGB[]>([{ r: 0, g: 0, b: 0 }]);
-  const [pickingLock, setPickingLock] = useState(false);
-  const [pickingColor, setPickingColor] = useState(false);
-  const [lockedColor, setLockedColor] = useState<RGB | null>(null);
-  const [provinceCount, setProvinceCount] = useState(0);
-  const [hoverInspect, setHoverInspect] = useState(false);
-  const [, forceUpdate] = useState(0);
 
-  // Sidebar mode
-  const [sidebarMode, setSidebarMode] = useState<SidebarMode>('painting');
-  const [selectedProvince, setSelectedProvince] = useState<ProvinceData | null>(null);
-  const [modLoaded, setModLoaded] = useState(false);
-  const [modDirty, setModDirty] = useState(false);
-  const [modifiedProvinceIds, setModifiedProvinceIds] = useState<Set<number>>(new Set());
-  const [landedTitles, setLandedTitles] = useState<LandedTitleNode[]>([]);
-  const [historyFiles, setHistoryFiles] = useState<string[]>([]);
-
-  // Pending province map (deferred creation — runtime only)
-  const pendingMapRef = useRef<PendingProvinceMap>(new PendingProvinceMap());
-  const [pendingCount, setPendingCount] = useState(0);
-  const [pendingSaveOptions, setPendingSaveOptions] = useState<PendingSaveOptions>({
-    definitionCsv: true,
-    historyStubs: true,
-    landedTitles: true,
-    terrainEntries: true,
-  });
-
-  // Pending orphan dialog state (shown when erase removes all pixels of a pending province)
-  const [showPendingOrphanDialog, setShowPendingOrphanDialog] = useState(false);
-  const [pendingOrphans, setPendingOrphans] = useState<PendingProvince[]>([]);
-  const pendingOrphanTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Editing a pending province (from Pending tab "Edit" button → switches to Create tab)
-  const [editingPendingKey, setEditingPendingKey] = useState<string | null>(null);
-
-  // Reconciliation dialog state
-  const [showReconcileDialog, setShowReconcileDialog] = useState(false);
-  const [reconcileOrphans, setReconcileOrphans] = useState<ProvinceData[]>([]);
-  const [reconcileParents, setReconcileParents] = useState<OrphanedParent[]>([]);
-
-  // Current mod path
-  const modPathRef = useRef<string | null>(null);
-
-  // Core objects — created once, persisted across renders
+  // Core shared refs — created once, persisted across renders
   const engineRef = useRef<TileEngine | null>(null);
   const undoManagerRef = useRef<UndoManager>(new UndoManager());
   const registryRef = useRef<ColorRegistry>(new ColorRegistry());
   const toolManagerRef = useRef<ToolManager | null>(null);
+  const pendingMapRef = useRef<PendingProvinceMap>(new PendingProvinceMap());
+  const modPathRef = useRef<string | null>(null);
 
-  /** Check if any pending provinces lost all their pixels (after erase). Debounced. */
-  const scheduleCheckPendingOrphans = useCallback(() => {
-    if (pendingOrphanTimerRef.current) clearTimeout(pendingOrphanTimerRef.current);
-    pendingOrphanTimerRef.current = setTimeout(async () => {
-      const engine = engineRef.current;
-      const pendingMap = pendingMapRef.current;
-      if (!engine || pendingMap.count === 0) return;
+  /* ── Hook calls (order matters for dependency wiring) ──────── */
 
-      const orphaned: PendingProvince[] = [];
-      for (const entry of pendingMap.getAll()) {
-        const location = await engine.findColorLocationAsync(entry.color);
-        if (!location) orphaned.push(entry);
+  const viewport = useViewportSettings({ engineRef });
+
+  const handleColorRemapRef = useRef<(oldColor: RGB, newColor: RGB) => void>(() => {});
+  const activeColorRef = useRef<RGB>({ r: 255, g: 0, b: 0 });
+
+  const lasso = useLassoSelection({
+    engineRef, toolManagerRef, registryRef, undoManagerRef, activeColorRef,
+    setStatus,
+    setDraftDirty: (dirty: boolean) => setDraftDirtyRef.current(dirty),
+    setModDirty: (dirty: boolean) => setModDirtyRef.current(dirty),
+    setModifiedProvinceIds: (v) => setModifiedProvinceIdsRef.current(v),
+    onColorRemap: (oldColor, newColor) => handleColorRemapRef.current(oldColor, newColor),
+  });
+
+  const painting = usePaintingTools({
+    toolManagerRef,
+    onBeforeToolChange: useCallback((oldTool: ToolType, newTool: ToolType) => {
+      if (oldTool === 'lasso' && newTool !== 'lasso') {
+        lasso.clearSelection();
       }
-
-      if (orphaned.length > 0) {
-        setPendingOrphans(orphaned);
-        setShowPendingOrphanDialog(true);
+      if (newTool === 'lasso' && oldTool !== 'lasso') {
+        const engine = engineRef.current;
+        if (engine && engine.isOverlayVisible()) {
+          engine.clearOverlay();
+          engine.setOverlayVisible(false);
+        }
       }
-    }, 200);
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [lasso.clearSelection]),
+  });
+
+  // Keep activeColorRef in sync with painting tool's current color
+  activeColorRef.current = painting.activeColor;
+
+  // Placeholder refs for cross-hook wiring (avoids forward reference issues)
+  const setDraftDirtyRef = useRef<(dirty: boolean) => void>(() => {});
+  const setLoadingRef = useRef<(l: boolean) => void>(() => {});
+  const setLoadingMessageRef = useRef<(msg: string | null) => void>(() => {});
+  const setModDirtyRef = useRef<(dirty: boolean) => void>(() => {});
+  const setModifiedProvinceIdsRef = useRef<React.Dispatch<React.SetStateAction<Set<number>>>>(() => {});
+
+  const pending = usePendingProvinces({
+    engineRef, registryRef, toolManagerRef, undoManagerRef, pendingMapRef,
+    setStatus,
+    setDraftDirty: (dirty: boolean) => setDraftDirtyRef.current(dirty),
+    setModDirty: (dirty: boolean) => setModDirtyRef.current(dirty),
+    setModifiedProvinceIds: (v) => setModifiedProvinceIdsRef.current(v),
+    onColorChange: painting.handleColorChange,
+    setSidebarMode: (mode) => inspector.setSidebarMode(mode),
+    triggerForceUpdate: () => undoRedo.triggerForceUpdate(),
+  });
+
+  const undoRedo = useUndoRedo({
+    toolManagerRef, pendingMapRef, registryRef, undoManagerRef,
+    setStatus,
+    setPendingCount: pending.setPendingCount,
+    setProvinceCount: pending.setProvinceCount,
+  });
+
+  const colorPicking = useColorPicking({
+    toolManagerRef,
+    setStatus,
+    onPickColor: painting.handleColorChange,
+    triggerForceUpdate: undoRedo.triggerForceUpdate,
+  });
+
+  const inspector = useProvinceInspector({
+    engineRef, registryRef, modPathRef,
+    setStatus,
+    setDraftDirty: (dirty: boolean) => setDraftDirtyRef.current(dirty),
+    setZoomLevel: viewport.setZoomLevel,
+  });
+
+  const save = useSaveReconciliation({
+    engineRef, registryRef, pendingMapRef, modPathRef,
+    modifiedProvinceIds: inspector.modifiedProvinceIds,
+    landedTitles: inspector.landedTitles,
+    pendingSaveOptions: pending.pendingSaveOptions,
+    setStatus,
+    setDraftDirty: (dirty: boolean) => setDraftDirtyRef.current(dirty),
+    setModDirty: inspector.setModDirty,
+    setModifiedProvinceIds: inspector.setModifiedProvinceIds,
+    setPendingCount: pending.setPendingCount,
+    setProvinceCount: pending.setProvinceCount,
+  });
+
+  const voronoi = useVoronoiGenerator({
+    engineRef, registryRef, undoManagerRef, pendingMapRef,
+    setStatus,
+    setDraftDirty: (dirty: boolean) => setDraftDirtyRef.current(dirty),
+    setPendingCount: pending.setPendingCount,
+    setProvinceCount: pending.setProvinceCount,
+    cancelOtherPickingModes: useCallback(() => {
+      colorPicking.setPickingEmpty(false);
+      colorPicking.setPickingLock(false);
+      colorPicking.setPickingColor(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []),
+    triggerForceUpdate: undoRedo.triggerForceUpdate,
+  });
+
+  const draft = useDraftSaveLoad({
+    engineRef, registryRef, toolManagerRef, undoManagerRef, pendingMapRef, modPathRef,
+    setStatus,
+    pendingSaveOptions: pending.pendingSaveOptions,
+    emptyColors: colorPicking.emptyColors,
+    lockedColor: colorPicking.lockedColor,
+    loading: false, // mapLoader not yet created; draft uses its own loading guard
+    setLoading: (l: boolean) => setLoadingRef.current(l),
+    setLoadingMessage: (msg: string | null) => setLoadingMessageRef.current(msg),
+    setLandedTitles: inspector.setLandedTitles,
+    setModLoaded: inspector.setModLoaded,
+    setModDirty: inspector.setModDirty,
+    setModifiedProvinceIds: inspector.setModifiedProvinceIds,
+    setSelectedProvince: inspector.setSelectedProvince,
+    setHistoryFiles: inspector.setHistoryFiles,
+    setPendingCount: pending.setPendingCount,
+    setProvinceCount: pending.setProvinceCount,
+    setPendingSaveOptions: pending.setPendingSaveOptions,
+    setEmptyColors: colorPicking.setEmptyColors,
+    setLockedColor: colorPicking.setLockedColor,
+    setHeightmapAvailable: viewport.setHeightmapAvailable,
+    setHeightmapVisible: viewport.setHeightmapVisible,
+    onColorChange: painting.handleColorChange,
+    triggerForceUpdate: undoRedo.triggerForceUpdate,
+  });
+
+  // Now that draft/inspector/pending exist, wire up the refs
+  setDraftDirtyRef.current = draft.setDraftDirty;
+  setModDirtyRef.current = inspector.setModDirty;
+  setModifiedProvinceIdsRef.current = inspector.setModifiedProvinceIds;
+  handleColorRemapRef.current = pending.handleColorRemap;
+
+  const mapLoader = useMapLoading({
+    engineRef, registryRef, undoManagerRef, pendingMapRef, modPathRef, toolManagerRef,
+    setStatus,
+    setLandedTitles: inspector.setLandedTitles,
+    setModLoaded: inspector.setModLoaded,
+    setModDirty: inspector.setModDirty,
+    setModifiedProvinceIds: inspector.setModifiedProvinceIds,
+    setSelectedProvince: inspector.setSelectedProvince,
+    setHistoryFiles: inspector.setHistoryFiles,
+    setProvinceCount: pending.setProvinceCount,
+    setPendingCount: pending.setPendingCount,
+    setHeightmapAvailable: viewport.setHeightmapAvailable,
+    setHeightmapVisible: viewport.setHeightmapVisible,
+    setDraftDirty: draft.setDraftDirty,
+    setDraftLoadedName: draft.setDraftLoadedName,
+    onColorChange: painting.handleColorChange,
+    triggerForceUpdate: undoRedo.triggerForceUpdate,
+    guardUnsavedDraft: draft.guardUnsavedDraft,
+  });
+
+  // Wire mapLoader.setLoading and setLoadingMessage to draft's refs
+  setLoadingRef.current = mapLoader.setLoading;
+  setLoadingMessageRef.current = mapLoader.setLoadingMessage;
+
+  /* ── Engine initialization ─────────────────────────────────── */
 
   const handleEngineReady = useCallback((engine: TileEngine) => {
     engineRef.current = engine;
 
-    // Create ToolManager now that we have the engine
     const tm = new ToolManager(engine, registryRef.current, undoManagerRef.current);
     tm.setColor({ r: 255, g: 0, b: 0 });
     tm.setOnPaintEvent((event) => {
@@ -125,10 +232,22 @@ export default function App() {
         setStatus(`${event.tool}: ${event.pixelCount} pixels`);
       }
 
-      // Handle auto-registered new province (paint with unregistered color)
+      // Sector manager rescan: route to optimal method per tool
+      const sm = registryRef.current.getSectorManager();
+      if (sm.isPopulated) {
+        if (event.tool === 'flood-fill' && event.affectedTiles) {
+          sm.rescanByTiles(event.affectedTiles);
+        } else if ((event.tool === 'brush' || event.tool === 'eraser') && event.bounds) {
+          sm.rescanByBounds(
+            event.bounds.minGx, event.bounds.minGy,
+            event.bounds.maxGx, event.bounds.maxGy,
+          );
+        }
+      }
+
       if (event.newProvince) {
         const { id, color, name } = event.newProvince;
-        const pendingMap = pendingMapRef.current;
+        const pMap = pendingMapRef.current;
         const colorKey = rgbToKey(color);
 
         const request: CreateProvinceRequest = {
@@ -138,11 +257,10 @@ export default function App() {
         };
         const pendingEntry: PendingProvince = { id, color, name, request };
 
-        if (!pendingMap.has(colorKey)) {
-          pendingMap.add(pendingEntry);
+        if (!pMap.has(colorKey)) {
+          pMap.add(pendingEntry);
         }
 
-        // Patch the undo action so undo/redo can sync the pending tab
         const lastAction = tm.getLastUndoAction();
         if (lastAction) {
           lastAction.pendingAdded = [
@@ -151,864 +269,190 @@ export default function App() {
           ];
         }
 
-        setPendingCount(pendingMap.count);
-        setProvinceCount(registryRef.current.count);
+        pending.setPendingCount(pMap.count);
+        pending.setProvinceCount(registryRef.current.count);
         setStatus(`Auto-registered Province #${id}`);
       }
 
-      // Force re-render for undo/redo button state
-      forceUpdate(n => n + 1);
+      setDraftDirtyRef.current(true);
+      undoRedo.triggerForceUpdate();
 
-      // After an erase, check if any pending province was fully erased
-      if (event.tool === 'eraser' && pendingMapRef.current.count > 0) {
-        scheduleCheckPendingOrphans();
+      if (pendingMapRef.current.count > 0) {
+        pending.scheduleCheckPendingOrphans();
       }
     });
     toolManagerRef.current = tm;
-  }, [scheduleCheckPendingOrphans]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pending.scheduleCheckPendingOrphans]);
 
-  const handleCursorMove = useCallback((gx: number, gy: number) => {
-    setCursorPos({ gx, gy });
-  }, []);
+  /* ── Keyboard shortcuts ────────────────────────────────────── */
 
-  const handleZoomChange = useCallback((zoom: number) => {
-    setZoomLevel(zoom);
-  }, []);
-
-  const handleToggleGrid = useCallback(() => {
-    const engine = engineRef.current;
-    if (!engine) return;
-    engine.toggleGrid();
-    setGridEnabled(engine.getShowGrid());
-  }, []);
-
-  const handleToggleHoverInspect = useCallback(() => {
-    setHoverInspect(prev => !prev);
-  }, []);
-
-  const handleToolChange = useCallback((tool: ToolType) => {
-    setActiveTool(tool);
-    toolManagerRef.current?.setTool(tool);
-  }, []);
-
-  const handleColorChange = useCallback((color: RGB) => {
-    setActiveColor(color);
-    toolManagerRef.current?.setColor(color);
-  }, []);
-
-  const handleBrushRadiusChange = useCallback((radius: number) => {
-    setBrushRadius(radius);
-    toolManagerRef.current?.setBrushRadius(radius);
-  }, []);
-
-  const handleToggleRespectBorders = useCallback(() => {
-    const tm = toolManagerRef.current;
-    if (!tm) return;
-    const newValue = !tm.getRespectBorders();
-    tm.setRespectBorders(newValue);
-    setRespectBorders(newValue);
-  }, []);
-
-  const handleDefineEmpty = useCallback(() => {
-    setPickingEmpty(prev => !prev);
-    setPickingLock(false);
-    setPickingColor(false);
-  }, []);
-
-  const handlePickEmpty = useCallback((color: RGB) => {
-    const tm = toolManagerRef.current;
-    if (!tm) return;
-    tm.addEmptyColor(color);
-    setEmptyColors(tm.getEmptyColors());
-    setPickingEmpty(false);
-    setStatus(`Defined empty color: (${color.r}, ${color.g}, ${color.b})`);
-    forceUpdate(n => n + 1);
-  }, []);
-
-  const handleRemoveEmpty = useCallback((color: RGB) => {
-    const tm = toolManagerRef.current;
-    if (!tm) return;
-    tm.removeEmptyColor(color);
-    setEmptyColors(tm.getEmptyColors());
-    setStatus(`Removed empty color: (${color.r}, ${color.g}, ${color.b})`);
-    forceUpdate(n => n + 1);
-  }, []);
-
-  const handleTogglePickLock = useCallback(() => {
-    setPickingLock(prev => !prev);
-    setPickingEmpty(false);
-    setPickingColor(false);
-  }, []);
-
-  const handlePickLock = useCallback((color: RGB) => {
-    const tm = toolManagerRef.current;
-    if (!tm) return;
-    tm.setLockedColor(color);
-    setLockedColor(color);
-    setPickingLock(false);
-    setStatus(`Province locked to color: (${color.r}, ${color.g}, ${color.b})`);
-  }, []);
-
-  const handleClearLock = useCallback(() => {
-    const tm = toolManagerRef.current;
-    if (!tm) return;
-    tm.setLockedColor(null);
-    setLockedColor(null);
-    setStatus('Province lock cleared');
-  }, []);
-
-  const handleTogglePickColor = useCallback(() => {
-    setPickingColor(prev => !prev);
-    setPickingEmpty(false);
-    setPickingLock(false);
-  }, []);
-
-  const handlePickColor = useCallback((color: RGB) => {
-    handleColorChange(color);
-    setPickingColor(false);
-    setStatus(`Active color set to: (${color.r}, ${color.g}, ${color.b})`);
-  }, [handleColorChange]);
-
-  const handleJumpToProvince = useCallback(async (province: ProvinceData) => {
-    const engine = engineRef.current;
-    if (!engine || !engine.isLoaded()) return;
-
-    setStatus(`Searching for province ${province.id}: ${province.name}...`);
-    const location = await engine.findColorLocationAsync(province.color);
-    if (!location) {
-      setStatus(`Province "${province.name}" has no pixels on the map`);
-      return;
-    }
-
-    engine.centerOn(location.gx, location.gy, MAX_ZOOM);
-    setZoomLevel(engine.getZoom());
-    setStatus(`Jumped to province ${province.id}: ${province.name}`);
-  }, []);
-
-  /** Convert a PendingProvince to ProvinceData for ColorRegistry */
-  const pendingToProvinceData = useCallback((entry: PendingProvince): ProvinceData => ({
-    id: entry.id,
-    color: entry.color,
-    name: entry.name,
-    titleTier: entry.request.titleTier,
-    culture: entry.request.culture,
-    religion: entry.request.religion,
-    holding: entry.request.holding,
-    terrain: entry.request.terrain,
-    historyFile: entry.request.historyFile,
-    isNew: true,
-  }), []);
-
-  /** Sync pending map + registry after undo/redo action */
-  const syncPendingFromAction = useCallback((action: { pendingRemoved?: PendingProvince[]; pendingAdded?: PendingProvince[] }, isUndo: boolean) => {
-    const pendingMap = pendingMapRef.current;
-    const registry = registryRef.current;
-    let changed = false;
-
-    // For undo: restore removed, remove added. For redo: remove removed, restore added.
-    const toRestore = isUndo ? action.pendingRemoved : action.pendingAdded;
-    const toRemove = isUndo ? action.pendingAdded : action.pendingRemoved;
-
-    if (toRestore) {
-      for (const entry of toRestore) {
-        if (!pendingMap.has(rgbToKey(entry.color))) {
-          pendingMap.add(entry);
-          registry.addProvince(pendingToProvinceData(entry));
-          changed = true;
-        }
-      }
-    }
-
-    if (toRemove) {
-      for (const entry of toRemove) {
-        const key = rgbToKey(entry.color);
-        if (pendingMap.has(key)) {
-          pendingMap.remove(key);
-          registry.removeProvince(entry.id);
-          changed = true;
-        }
-      }
-    }
-
-    if (changed) {
-      setPendingCount(pendingMap.count);
-      setProvinceCount(registry.count);
-    }
-  }, [pendingToProvinceData]);
-
-  const handleUndo = useCallback(() => {
-    const action = toolManagerRef.current?.undo();
-    if (action) {
-      syncPendingFromAction(action, true);
-      forceUpdate(n => n + 1);
-
-      const restoredCount = action.pendingRemoved?.length ?? 0;
-      const removedCount = action.pendingAdded?.length ?? 0;
-      if (restoredCount > 0) {
-        setStatus(`Undo — restored ${restoredCount} pending province(s)`);
-      } else if (removedCount > 0) {
-        setStatus(`Undo — removed ${removedCount} pending province(s)`);
-      } else {
-        setStatus('Undo');
-      }
-    }
-  }, [syncPendingFromAction]);
-
-  const handleRedo = useCallback(() => {
-    const action = toolManagerRef.current?.redo();
-    if (action) {
-      syncPendingFromAction(action, false);
-      forceUpdate(n => n + 1);
-
-      const restoredCount = action.pendingAdded?.length ?? 0;
-      const removedCount = action.pendingRemoved?.length ?? 0;
-      if (removedCount > 0) {
-        setStatus(`Redo — removed ${removedCount} pending province(s)`);
-      } else if (restoredCount > 0) {
-        setStatus(`Redo — restored ${restoredCount} pending province(s)`);
-      } else {
-        setStatus('Redo');
-      }
-    }
-  }, [syncPendingFromAction]);
-
-  // Province click handler for inspector mode
-  const handleProvinceClick = useCallback((gx: number, gy: number) => {
-    const engine = engineRef.current;
-    if (!engine || !engine.isLoaded()) return;
-
-    const px = engine.getPixel(gx, gy);
-    const province = registryRef.current.getProvinceByColor(px);
-    setSelectedProvince(province || null);
-  }, []);
-
-  // Inspector: edit province data
-  const handleProvinceEdit = useCallback((updated: ProvinceData) => {
-    setSelectedProvince(updated);
-    setModDirty(true);
-    setModifiedProvinceIds(prev => new Set(prev).add(updated.id));
-
-    // Update registry
-    const registry = registryRef.current;
-    const existing = registry.getProvinceById(updated.id);
-    if (existing) {
-      Object.assign(existing, updated);
-    }
-  }, []);
-
-  // Inspector: fetch hierarchy
-  const handleFetchHierarchy = useCallback(async (provinceId: number): Promise<LandedTitleNode[]> => {
-    try {
-      return await window.mapPainter.getHierarchy(provinceId);
-    } catch {
-      return [];
-    }
-  }, []);
-
-  // Inspector: rename a title key
-  const handleTitleRename = useCallback(async (oldKey: string, newKey: string) => {
-    try {
-      const success = await window.mapPainter.renameTitle(oldKey, newKey);
-      if (success) {
-        setModDirty(true);
-        setStatus(`Renamed title: ${oldKey} -> ${newKey}`);
-      } else {
-        setStatus(`Title not found: ${oldKey}`);
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setStatus(`Rename error: ${msg}`);
-    }
-  }, []);
-
-  // Inspector: save mod files only
-  const handleSaveMod = useCallback(async () => {
-    if (!modPathRef.current) return;
-
-    try {
-      setStatus('Saving mod files...');
-      const provinces = registryRef.current.getAllProvinces();
-      await window.mapPainter.saveMod({
-        provinces,
-        modifiedProvinceIds: Array.from(modifiedProvinceIds),
-      });
-      setModDirty(false);
-      setModifiedProvinceIds(new Set());
-      setStatus('Mod files saved');
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setStatus(`Save error: ${msg}`);
-    }
-  }, [modifiedProvinceIds]);
-
-  // Perform the actual save (image + mod files) — called after reconciliation or directly
-  const performSave = useCallback(async () => {
-    const engine = engineRef.current;
-    const pendingMap = pendingMapRef.current;
-    if (!modPathRef.current || !engine || !engine.isLoaded()) return;
-
-    try {
-      // 1. Flush pending provinces first
-      if (pendingMap.count > 0) {
-        setStatus('Reconciling pending province IDs...');
-
-        // Find max committed (non-pending) ID
-        const allProvinces = registryRef.current.getAllProvinces();
-        let maxCommittedId = 0;
-        for (const p of allProvinces) {
-          if (!pendingMap.has(rgbToKey(p.color)) && p.id > maxCommittedId) {
-            maxCommittedId = p.id;
-          }
-        }
-
-        // Renumber pending IDs sequentially from maxCommittedId + 1
-        pendingMap.reconcileIds(maxCommittedId + 1);
-
-        // Update registry province objects to match reconciled IDs
-        for (const entry of pendingMap.getAll()) {
-          const existing = registryRef.current.getProvinceByColor(entry.color);
-          if (existing) {
-            existing.id = entry.id;
-            existing.isNew = true;
-          }
-        }
-
-        setStatus(`Flushing ${pendingMap.count} pending provinces...`);
-        await window.mapPainter.flushPendingProvinces({
-          provinces: pendingMap.getAll(),
-          options: pendingSaveOptions,
-        });
-
-        pendingMap.clear();
-        setPendingCount(0);
-      }
-
-      // 2. Save map image
-      setStatus('Saving provinces.png...');
-      const rgbaBuffer = new Uint8Array(engine.stitchFullImage().buffer);
-      const { width, height } = engine.getMapSize();
-      await window.mapPainter.saveImage(modPathRef.current, rgbaBuffer, width, height);
-
-      // 3. Save mod files
-      setStatus('Saving mod files...');
-      const provinces = registryRef.current.getAllProvinces();
-      await window.mapPainter.saveMod({
-        provinces,
-        modifiedProvinceIds: Array.from(modifiedProvinceIds),
-      });
-      setModDirty(false);
-      setModifiedProvinceIds(new Set());
-
-      setStatus('Saved provinces.png + mod files');
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setStatus(`Save error: ${msg}`);
-    }
-  }, [modifiedProvinceIds, pendingSaveOptions]);
-
-  // Save everything: scan for orphans first, show reconciliation dialog if needed
-  const handleSaveAll = useCallback(async () => {
-    const engine = engineRef.current;
-    if (!modPathRef.current || !engine || !engine.isLoaded()) {
-      setStatus('Nothing to save — load a map first');
-      return;
-    }
-
-    try {
-      // Scan the map for ALL colors actually present — do NOT skip empty colors
-      // here because provinces may share a color with an empty color (e.g. black
-      // ocean provinces in definition.csv). Empty color filtering is only for
-      // paint tools, not for orphan detection.
-      setStatus('Scanning map for orphaned provinces...');
-      const usedColors = await engine.collectUsedColorsAsync(new Set());
-
-      // Detect orphans
-      const allProvinces = registryRef.current.getAllProvinces();
-      const { orphanedProvinces, orphanedParents } = detectOrphans(
-        allProvinces, usedColors, landedTitles
-      );
-
-      if (orphanedProvinces.length > 0) {
-        // Show reconciliation dialog
-        setReconcileOrphans(orphanedProvinces);
-        setReconcileParents(orphanedParents);
-        setShowReconcileDialog(true);
-      } else {
-        // No orphans — save directly
-        await performSave();
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setStatus(`Save error: ${msg}`);
-    }
-  }, [landedTitles, performSave]);
-
-  // Reconciliation: user confirmed removal
-  const handleReconcileConfirm = useCallback(async (
-    confirmedRemovedIds: number[],
-    confirmedRemovedTitleKeys: string[]
-  ) => {
-    setShowReconcileDialog(false);
-
-    if (confirmedRemovedIds.length === 0) {
-      // Nothing to remove, just save
-      await performSave();
-      return;
-    }
-
-    try {
-      setStatus('Reconciling provinces...');
-      const allProvinces = registryRef.current.getAllProvinces();
-      const removedSet = new Set(confirmedRemovedIds);
-
-      // Build sequential ID remap
-      const idMapEntries = buildIdRemap(allProvinces, removedSet);
-      const idMap: Record<number, number> = {};
-      for (const [oldId, newId] of idMapEntries) {
-        idMap[oldId] = newId;
-      }
-
-      // Build surviving province list with new IDs
-      const surviving = allProvinces
-        .filter(p => !removedSet.has(p.id))
-        .map(p => ({ ...p, id: idMap[p.id] ?? p.id }))
-        .sort((a, b) => a.id - b.id);
-
-      // Send to main process for file cleanup
-      await window.mapPainter.reconcileProvinces({
-        removedIds: confirmedRemovedIds,
-        idMap,
-        removedTitleKeys: confirmedRemovedTitleKeys,
-        provinces: surviving,
-      });
-
-      // Update registry
-      for (const id of confirmedRemovedIds) {
-        registryRef.current.removeProvince(id);
-      }
-      registryRef.current.applyIdRemap(idMapEntries);
-      setProvinceCount(registryRef.current.count);
-
-      setStatus(`Reconciled: removed ${confirmedRemovedIds.length} provinces, renumbered IDs`);
-
-      // Now perform the normal save
-      await performSave();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setStatus(`Reconciliation error: ${msg}`);
-    }
-  }, [performSave]);
-
-  // Reconciliation: user cancelled
-  const handleReconcileCancel = useCallback(() => {
-    setShowReconcileDialog(false);
-    setStatus('Save cancelled — orphaned provinces detected');
-  }, []);
-
-  // Creator: create new province (deferred — no IPC, just pending map + registry)
-  const handleCreateProvince = useCallback(async (request: CreateProvinceRequest): Promise<ProvinceData | null> => {
-    try {
-      const registry = registryRef.current;
-      const pendingMap = pendingMapRef.current;
-
-      // registerProvince assigns nextId++ and adds to registry
-      const province = registry.registerProvince({
-        color: request.color,
-        name: request.name,
-        titleTier: request.titleTier,
-        culture: request.culture,
-        religion: request.religion,
-        holding: request.holding,
-        terrain: request.terrain,
-        historyFile: request.historyFile,
-      });
-
-      // Add to pending map for deferred file writes
-      const pendingEntry: PendingProvince = {
-        id: province.id,
-        color: province.color,
-        name: province.name,
-        request,
-      };
-      pendingMap.add(pendingEntry);
-
-      setProvinceCount(registry.count);
-      setPendingCount(pendingMap.count);
-
-      // Suggest a new unique color for the next province
-      try {
-        const suggested = registry.suggestNextColor();
-        handleColorChange(suggested);
-      } catch {
-        // Exhausted colors, unlikely
-      }
-
-      setStatus(`Pending province #${province.id}: ${province.name}`);
-      forceUpdate(n => n + 1);
-      return province;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setStatus(`Create error: ${msg}`);
-      return null;
-    }
-  }, [handleColorChange]);
-
-  /** Remove a single pending province from the pending map + registry (manual delete from tab) */
-  const handleRemovePending = useCallback((colorKey: string) => {
-    const pendingMap = pendingMapRef.current;
-    const entry = pendingMap.get(colorKey);
-    if (!entry) return;
-
-    pendingMap.remove(colorKey);
-    registryRef.current.removeProvince(entry.id);
-    setPendingCount(pendingMap.count);
-    setProvinceCount(registryRef.current.count);
-    setStatus(`Removed pending province #${entry.id}: ${entry.name}`);
-  }, []);
-
-  /** Pending orphan dialog — user confirmed removal of selected orphans */
-  const handlePendingOrphanConfirm = useCallback((removedColorKeys: string[]) => {
-    const pendingMap = pendingMapRef.current;
-    const removed: PendingProvince[] = [];
-
-    for (const key of removedColorKeys) {
-      const entry = pendingMap.get(key);
-      if (entry) {
-        pendingMap.remove(key);
-        registryRef.current.removeProvince(entry.id);
-        removed.push(entry);
-      }
-    }
-
-    // Patch the most recent undo action with pendingRemoved so undo can restore them
-    if (removed.length > 0) {
-      const lastAction = toolManagerRef.current?.getLastUndoAction();
-      if (lastAction) {
-        lastAction.pendingRemoved = [
-          ...(lastAction.pendingRemoved ?? []),
-          ...removed,
-        ];
-      }
-    }
-
-    setPendingCount(pendingMap.count);
-    setProvinceCount(registryRef.current.count);
-    setShowPendingOrphanDialog(false);
-    setPendingOrphans([]);
-    setStatus(`Removed ${removed.length} orphaned pending province(s)`);
-  }, []);
-
-  /** Pending orphan dialog — user chose to keep all */
-  const handlePendingOrphanCancel = useCallback(() => {
-    setShowPendingOrphanDialog(false);
-    setPendingOrphans([]);
-  }, []);
-
-  /** Navigate to Create tab to edit a pending province's details */
-  const handleEditPending = useCallback((colorKey: string) => {
-    setEditingPendingKey(colorKey);
-    setSidebarMode('creator');
-  }, []);
-
-  /** Update a pending province's details (from Create tab in edit mode) */
-  const handleUpdatePending = useCallback((colorKey: string, request: CreateProvinceRequest) => {
-    const pendingMap = pendingMapRef.current;
-    const entry = pendingMap.get(colorKey);
-    if (!entry) return;
-
-    // Update pending entry
-    entry.name = request.name;
-    entry.request = request;
-
-    // Update registry province data to stay in sync
-    const province = registryRef.current.getProvinceByColor(entry.color);
-    if (province) {
-      province.name = request.name;
-      province.culture = request.culture;
-      province.religion = request.religion;
-      province.holding = request.holding;
-      province.terrain = request.terrain;
-      province.titleTier = request.titleTier;
-      province.historyFile = request.historyFile;
-    }
-
-    setEditingPendingKey(null);
-    setStatus(`Updated pending province #${entry.id}: ${request.name}`);
-    forceUpdate(n => n + 1);
-  }, []);
-
-  /** Flush pending provinces only (from the Pending tab "Save All" button) */
-  const handleFlushPendingSave = useCallback(async () => {
-    const pendingMap = pendingMapRef.current;
-    if (pendingMap.count === 0 || !modPathRef.current) return;
-
-    try {
-      // Reconcile IDs
-      const allProvinces = registryRef.current.getAllProvinces();
-      let maxCommittedId = 0;
-      for (const p of allProvinces) {
-        if (!pendingMap.has(rgbToKey(p.color)) && p.id > maxCommittedId) {
-          maxCommittedId = p.id;
-        }
-      }
-
-      pendingMap.reconcileIds(maxCommittedId + 1);
-
-      // Update registry province objects to match reconciled IDs
-      for (const entry of pendingMap.getAll()) {
-        const existing = registryRef.current.getProvinceByColor(entry.color);
-        if (existing) {
-          existing.id = entry.id;
-          existing.isNew = true;
-        }
-      }
-
-      setStatus(`Flushing ${pendingMap.count} pending provinces...`);
-      await window.mapPainter.flushPendingProvinces({
-        provinces: pendingMap.getAll(),
-        options: pendingSaveOptions,
-      });
-
-      const count = pendingMap.count;
-      pendingMap.clear();
-      setPendingCount(0);
-      setStatus(`Saved ${count} pending province(s) to mod files`);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setStatus(`Flush error: ${msg}`);
-    }
-  }, [pendingSaveOptions]);
-
-  const handleOpenMap = useCallback(async () => {
-    if (loading) return;
-    setLoading(true);
-    setStatus('Selecting directory...');
-
-    try {
-      const modPath = await window.mapPainter.selectDirectory();
-      if (!modPath) {
-        setStatus('No directory selected');
-        setLoading(false);
-        return;
-      }
-
-      const engine = engineRef.current;
-      if (!engine) {
-        setStatus('Engine not initialized');
-        setLoading(false);
-        return;
-      }
-
-      // Load the image inside a block so the large IPC buffer goes fully
-      // out of scope after chunking into tiles — no dangling references.
-      setStatus('Loading provinces.png...');
-      let imgW: number;
-      let imgH: number;
-      {
-        const { buffer, width, height } = await window.mapPainter.loadImage(modPath);
-        imgW = width;
-        imgH = height;
-        engine.loadImage(buffer, width, height);
-        // `buffer` goes out of scope here — eligible for GC
-      }
-
-      // Clear undo history for new map
-      undoManagerRef.current.clear();
-
-      // Load full mod (definition.csv + landed_titles + history)
-      setStatus('Loading mod files...');
-      const modResult = await window.mapPainter.loadMod(modPath);
-
-      if (!modResult.success || !modResult.data) {
-        const errMsg = modResult.error || 'Unknown error';
-        console.warn('load-mod warning:', errMsg);
-        setStatus(`Loaded map (${imgW}x${imgH}) — ${errMsg}`);
-
-        // Fallback to basic definition.csv loading
-        const defResult = await window.mapPainter.loadDefinitions(modPath);
-        if (!defResult.error) {
-          registryRef.current.loadFromDefinitions(defResult.provinces as ProvinceData[]);
-          setProvinceCount(registryRef.current.count);
-        }
-      } else {
-        registryRef.current.loadFromDefinitions(modResult.data.provinces);
-        setProvinceCount(registryRef.current.count);
-        setLandedTitles(modResult.data.landedTitles);
-        const titleCount = modResult.data.landedTitles.length;
-        setStatus(`Loaded ${imgW}x${imgH} map — ${registryRef.current.count} provinces, ${titleCount} title trees`);
-        setModLoaded(true);
-      }
-
-      modPathRef.current = modPath;
-      setModDirty(false);
-      setModifiedProvinceIds(new Set());
-      setSelectedProvince(null);
-
-      // Clear pending map for new mod
-      pendingMapRef.current.clear();
-      setPendingCount(0);
-
-      // Fetch history file list for the Advanced wizard
-      try {
-        const hFiles = await window.mapPainter.listHistoryFiles();
-        setHistoryFiles(hFiles);
-      } catch {
-        setHistoryFiles([]);
-      }
-
-      // Suggest a unique color for the user to start with
-      try {
-        const suggested = registryRef.current.suggestNextColor();
-        handleColorChange(suggested);
-      } catch {
-        // Registry might be empty, that's fine
-      }
-
-      forceUpdate(n => n + 1);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setStatus(`Error: ${msg}`);
-      console.error('Failed to load map:', err);
-    } finally {
-      setLoading(false);
-    }
-  }, [loading, handleColorChange]);
-
-  // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't capture when typing in inputs
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
 
-      // Ctrl+Z = undo, Ctrl+Shift+Z = redo
       if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
         e.preventDefault();
-        if (e.shiftKey) {
-          handleRedo();
-        } else {
-          handleUndo();
+        if (e.shiftKey) undoRedo.handleRedo();
+        else undoRedo.handleUndo();
+        return;
+      }
+
+      if ((e.ctrlKey || e.metaKey) && e.key === 'y') {
+        e.preventDefault();
+        undoRedo.handleRedo();
+        return;
+      }
+
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'S') {
+        e.preventDefault();
+        draft.handleSaveDraft();
+        return;
+      }
+
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 's') {
+        e.preventDefault();
+        save.handleSaveAll();
+        return;
+      }
+
+      if (e.key === 'Escape') {
+        colorPicking.setPickingEmpty(false);
+        colorPicking.setPickingLock(false);
+        colorPicking.setPickingColor(false);
+        if (voronoi.pickingGenerator) voronoi.handleGeneratorCancelPicking();
+        if (lasso.selectedProvinces.size > 0) {
+          lasso.clearSelection();
+          setStatus('Selection cleared');
         }
         return;
       }
 
-      // Ctrl+Y = redo (alternative)
-      if ((e.ctrlKey || e.metaKey) && e.key === 'y') {
-        e.preventDefault();
-        handleRedo();
-        return;
-      }
-
-      // Ctrl+S = save everything (map image + mod files)
-      if ((e.ctrlKey || e.metaKey) && e.key === 's') {
-        e.preventDefault();
-        handleSaveAll();
-        return;
-      }
-
-      // Escape cancels picking modes
-      if (e.key === 'Escape') {
-        setPickingEmpty(false);
-        setPickingLock(false);
-        setPickingColor(false);
-        return;
-      }
-
-      // Tool shortcuts (no modifier, only in painting mode)
       if (!e.ctrlKey && !e.metaKey && !e.altKey) {
         switch (e.key.toLowerCase()) {
-          case 'f':
-            handleToolChange('flood-fill');
-            break;
-          case 'b':
-            handleToolChange('brush');
-            break;
-          case 'e':
-            handleToolChange('eraser');
-            break;
-          case 'h':
-            handleToggleHoverInspect();
-            break;
+          case 'f': painting.handleToolChange('flood-fill'); break;
+          case 'b': painting.handleToolChange('brush'); break;
+          case 'e': painting.handleToolChange('eraser'); break;
+          case 'h': viewport.handleToggleHoverInspect(); break;
+          case 'l': painting.handleToolChange('lasso'); break;
         }
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleToolChange, handleUndo, handleRedo, handleSaveAll, handleToggleHoverInspect]);
+  }, [painting.handleToolChange, undoRedo.handleUndo, undoRedo.handleRedo, save.handleSaveAll, draft.handleSaveDraft, viewport.handleToggleHoverInspect, voronoi.pickingGenerator, voronoi.handleGeneratorCancelPicking, lasso.selectedProvinces, lasso.clearSelection, colorPicking.setPickingEmpty, colorPicking.setPickingLock, colorPicking.setPickingColor]);
 
-  // Get pixel color under cursor for inspector display
-  const pixelColor = (cursorPos && engineRef.current?.isLoaded())
-    ? engineRef.current!.getPixel(cursorPos.gx, cursorPos.gy)
+  // Guard against closing with unsaved draft changes
+  useEffect(() => {
+    const cleanup = window.mapPainter.onCheckBeforeClose(() => {
+      if (!draft.draftDirtyRef.current) {
+        window.mapPainter.confirmClose();
+      } else {
+        draft.pendingNavigationRef.current = () => window.mapPainter.confirmClose();
+        draft.guardUnsavedDraft(() => window.mapPainter.confirmClose());
+      }
+    });
+    return cleanup;
+  }, [draft.draftDirtyRef, draft.pendingNavigationRef, draft.guardUnsavedDraft]);
+
+  /* ── Derived values ────────────────────────────────────────── */
+
+  const pixelColor = (viewport.cursorPos && engineRef.current?.isLoaded())
+    ? engineRef.current!.getPixel(viewport.cursorPos.gx, viewport.cursorPos.gy)
     : null;
 
   const tm = toolManagerRef.current;
-
   const mapLoaded = engineRef.current?.isLoaded() ?? false;
-  const tabs: { key: SidebarMode; label: string }[] = [
+
+  const tabs: { key: typeof inspector.sidebarMode; label: string }[] = [
     { key: 'painting', label: 'Paint' },
-    { key: 'inspector', label: `Inspect${modDirty ? ' *' : ''}` },
+    { key: 'inspector', label: `Inspect${inspector.modDirty ? ' *' : ''}` },
     { key: 'creator', label: 'Create' },
-    { key: 'pending', label: `Pending${pendingCount > 0 ? ` (${pendingCount})` : ''}` },
+    { key: 'pending', label: `Pending${pending.pendingCount > 0 ? ` (${pending.pendingCount})` : ''}` },
   ];
-  const activeTabIndex = tabs.findIndex(t => t.key === sidebarMode);
+  const activeTabIndex = tabs.findIndex(t => t.key === inspector.sidebarMode);
+
+  /* ── Render ────────────────────────────────────────────────── */
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', userSelect: 'none', background: theme.bg.base }}>
-      {/* Top bar — file ops only */}
       <Toolbar
-        onOpenMap={handleOpenMap}
-        onSaveAll={handleSaveAll}
+        onOpenMap={mapLoader.handleOpenMap}
+        onSaveAll={save.handleSaveAll}
+        onSaveDraft={draft.handleSaveDraft}
+        onLoadDraft={draft.handleLoadDraft}
         mapLoaded={mapLoaded}
-        loading={loading}
+        loading={mapLoader.loading}
       />
 
-      {/* Main area: VerticalToolBar | Canvas | Right Panel */}
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         <VerticalToolBar
-          activeTool={activeTool}
-          onToolChange={handleToolChange}
-          onUndo={handleUndo}
-          onRedo={handleRedo}
+          activeTool={painting.activeTool}
+          onToolChange={painting.handleToolChange}
+          onUndo={undoRedo.handleUndo}
+          onRedo={undoRedo.handleRedo}
           canUndo={tm?.canUndo ?? false}
           canRedo={tm?.canRedo ?? false}
-          brushRadius={brushRadius}
-          onBrushRadiusChange={handleBrushRadiusChange}
-          respectBorders={respectBorders}
-          onToggleRespectBorders={handleToggleRespectBorders}
-          pickingEmpty={pickingEmpty}
-          onDefineEmpty={handleDefineEmpty}
-          emptyColors={emptyColors}
-          onRemoveEmpty={handleRemoveEmpty}
-          pickingLock={pickingLock}
-          onTogglePickLock={handleTogglePickLock}
-          lockedColor={lockedColor}
-          onClearLock={handleClearLock}
-          pickingColor={pickingColor}
-          onTogglePickColor={handleTogglePickColor}
-          gridEnabled={gridEnabled}
-          onToggleGrid={handleToggleGrid}
-          hoverInspect={hoverInspect}
-          onToggleHoverInspect={handleToggleHoverInspect}
+          brushRadius={painting.brushRadius}
+          onBrushRadiusChange={painting.handleBrushRadiusChange}
+          respectBorders={painting.respectBorders}
+          onToggleRespectBorders={painting.handleToggleRespectBorders}
+          pickingEmpty={colorPicking.pickingEmpty}
+          onDefineEmpty={colorPicking.handleDefineEmpty}
+          emptyColors={colorPicking.emptyColors}
+          onRemoveEmpty={colorPicking.handleRemoveEmpty}
+          pickingLock={colorPicking.pickingLock}
+          onTogglePickLock={colorPicking.handleTogglePickLock}
+          lockedColor={colorPicking.lockedColor}
+          onClearLock={colorPicking.handleClearLock}
+          pickingColor={colorPicking.pickingColor}
+          onTogglePickColor={colorPicking.handleTogglePickColor}
+          gridEnabled={viewport.gridEnabled}
+          onToggleGrid={viewport.handleToggleGrid}
+          hoverInspect={viewport.hoverInspect}
+          onToggleHoverInspect={viewport.handleToggleHoverInspect}
+          heightmapVisible={viewport.heightmapVisible}
+          heightmapAvailable={viewport.heightmapAvailable}
+          heightmapOpacity={viewport.heightmapOpacity}
+          onToggleHeightmap={viewport.handleToggleHeightmap}
+          onHeightmapOpacityChange={viewport.handleHeightmapOpacityChange}
           mapLoaded={mapLoaded}
         />
 
-        <MainCanvas
-          onEngineReady={handleEngineReady}
-          onCursorMove={handleCursorMove}
-          onZoomChange={handleZoomChange}
-          toolManagerRef={toolManagerRef}
-          pickingEmpty={pickingEmpty}
-          onPickEmpty={handlePickEmpty}
-          pickingLock={pickingLock}
-          onPickLock={handlePickLock}
-          pickingColor={pickingColor}
-          onPickColor={handlePickColor}
-          inspectorMode={sidebarMode === 'inspector'}
-          onProvinceClick={handleProvinceClick}
-          hoverInspect={hoverInspect}
-          registryRef={registryRef}
-        />
+        <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+          <MainCanvas
+            onEngineReady={handleEngineReady}
+            onCursorMove={viewport.handleCursorMove}
+            onZoomChange={viewport.handleZoomChange}
+            toolManagerRef={toolManagerRef}
+            pickingEmpty={colorPicking.pickingEmpty}
+            onPickEmpty={colorPicking.handlePickEmpty}
+            pickingLock={colorPicking.pickingLock}
+            onPickLock={colorPicking.handlePickLock}
+            pickingColor={colorPicking.pickingColor}
+            onPickColor={colorPicking.handlePickColor}
+            inspectorMode={inspector.sidebarMode === 'inspector'}
+            onProvinceClick={inspector.handleProvinceClick}
+            hoverInspect={viewport.hoverInspect}
+            registryRef={registryRef}
+            pickingGenerator={voronoi.pickingGenerator}
+            onPickGenerator={voronoi.handleGeneratorPick}
+            lassoActive={painting.activeTool === 'lasso'}
+            onLassoComplete={lasso.handleLassoComplete}
+            onLassoShiftClick={lasso.handleLassoShiftClick}
+          />
+
+          <SelectionActionBar
+            selectedCount={lasso.selectedProvinces.size}
+            onHarmonize={lasso.handleHarmonize}
+            onClear={lasso.clearSelection}
+            harmonizing={lasso.harmonizing}
+          />
+
+          <SectorMapDrawer registryRef={registryRef} />
+        </div>
 
         {/* Right Panel */}
         <div style={{
@@ -1029,24 +473,23 @@ export default function App() {
             {tabs.map((tab) => (
               <button
                 key={tab.key}
-                onClick={() => setSidebarMode(tab.key)}
+                onClick={() => inspector.setSidebarMode(tab.key)}
                 style={{
                   flex: 1,
                   padding: '10px 0',
                   background: 'transparent',
-                  color: sidebarMode === tab.key ? theme.text.primary : theme.text.muted,
+                  color: inspector.sidebarMode === tab.key ? theme.text.primary : theme.text.muted,
                   border: 'none',
                   cursor: 'pointer',
                   fontSize: theme.font.sizeMd,
                   fontFamily: theme.font.family,
-                  fontWeight: sidebarMode === tab.key ? 600 : 400,
+                  fontWeight: inspector.sidebarMode === tab.key ? 600 : 400,
                   transition: theme.transition.fast,
                 }}
               >
                 {tab.label}
               </button>
             ))}
-            {/* Sliding underline */}
             <div style={{
               position: 'absolute',
               bottom: 0,
@@ -1060,11 +503,10 @@ export default function App() {
 
           {/* Panel content */}
           <div style={{ flex: 1, overflowY: 'auto', padding: theme.space.lg }}>
-            {/* All panels stay mounted so state persists across tab switches */}
-            <div style={{ display: sidebarMode === 'painting' ? 'block' : 'none' }}>
+            <div style={{ display: inspector.sidebarMode === 'painting' ? 'block' : 'none' }}>
               <ColorPicker
-                color={activeColor}
-                onChange={handleColorChange}
+                color={painting.activeColor}
+                onChange={painting.handleColorChange}
                 registry={registryRef.current}
               />
 
@@ -1072,7 +514,7 @@ export default function App() {
 
               <ProvinceSearch
                 registry={registryRef.current}
-                onJumpToProvince={handleJumpToProvince}
+                onJumpToProvince={inspector.handleJumpToProvince}
               />
 
               <div style={{ borderTop: `1px solid ${theme.border.muted}`, margin: `${theme.space.lg}px 0` }} />
@@ -1084,9 +526,9 @@ export default function App() {
                 fontWeight: 600,
                 letterSpacing: '-0.2px',
               }}>Hover Inspector</h3>
-              {cursorPos && engineRef.current?.isLoaded() ? (
+              {viewport.cursorPos && engineRef.current?.isLoaded() ? (
                 (() => {
-                  const px = engineRef.current!.getPixel(cursorPos.gx, cursorPos.gy);
+                  const px = engineRef.current!.getPixel(viewport.cursorPos.gx, viewport.cursorPos.gy);
                   const province = registryRef.current.getProvinceByColor(px);
                   return (
                     <div style={{ fontSize: theme.font.sizeMd }}>
@@ -1129,41 +571,54 @@ export default function App() {
               </div>
             </div>
 
-            <div style={{ display: sidebarMode === 'inspector' ? 'block' : 'none' }}>
+            <div style={{ display: inspector.sidebarMode === 'inspector' ? 'block' : 'none' }}>
               <ProvinceInspector
-                province={selectedProvince}
+                province={inspector.selectedProvince}
                 pixelColor={pixelColor}
-                onFetchHierarchy={handleFetchHierarchy}
-                onProvinceEdit={handleProvinceEdit}
-                onTitleRename={handleTitleRename}
-                onSave={handleSaveMod}
-                isDirty={modDirty}
-                modLoaded={modLoaded}
+                onFetchHierarchy={inspector.handleFetchHierarchy}
+                onProvinceEdit={inspector.handleProvinceEdit}
+                onTitleRename={inspector.handleTitleRename}
+                onSave={inspector.handleSaveMod}
+                isDirty={inspector.modDirty}
+                modLoaded={inspector.modLoaded}
               />
             </div>
 
-            <div style={{ display: sidebarMode === 'creator' ? 'block' : 'none' }}>
+            <div style={{ display: inspector.sidebarMode === 'creator' ? 'block' : 'none' }}>
               <ProvinceCreator
-                activeColor={activeColor}
-                landedTitles={landedTitles}
-                onCreate={handleCreateProvince}
-                modLoaded={modLoaded}
-                historyFiles={historyFiles}
-                editingProvince={editingPendingKey ? pendingMapRef.current.get(editingPendingKey) ?? null : null}
-                onUpdate={handleUpdatePending}
-                onCancelEdit={() => setEditingPendingKey(null)}
+                activeColor={painting.activeColor}
+                landedTitles={inspector.landedTitles}
+                onCreate={pending.handleCreateProvince}
+                modLoaded={inspector.modLoaded}
+                historyFiles={inspector.historyFiles}
+                editingProvince={pending.editingPendingKey ? pendingMapRef.current.get(pending.editingPendingKey) ?? null : null}
+                onUpdate={pending.handleUpdatePending}
+                onCancelEdit={() => pending.setEditingPendingKey(null)}
+              />
+
+              <div style={{ borderTop: `1px solid ${theme.border.muted}`, margin: `${theme.space.lg}px 0` }} />
+
+              <ProvinceGenerator
+                modLoaded={inspector.modLoaded}
+                engineRef={engineRef}
+                registryRef={registryRef}
+                onStartPicking={voronoi.handleGeneratorStartPicking}
+                onCancelPicking={voronoi.handleGeneratorCancelPicking}
+                pickingGenerator={voronoi.pickingGenerator}
+                pickedProvince={voronoi.generatorPickedProvince}
+                onConfirm={voronoi.handleGeneratorConfirm}
+                onOverlayChange={voronoi.handleOverlayChange}
               />
             </div>
 
-            <div style={{ display: sidebarMode === 'pending' ? 'block' : 'none' }}>
+            <div style={{ display: inspector.sidebarMode === 'pending' ? 'block' : 'none' }}>
               <PendingProvinces
                 pendingMap={pendingMapRef.current}
-                onRemove={handleRemovePending}
-                onEdit={handleEditPending}
-                saveOptions={pendingSaveOptions}
-                onSaveOptionsChange={setPendingSaveOptions}
-                onFlushSave={handleFlushPendingSave}
-                modLoaded={modLoaded}
+                onDelete={pending.handleDeletePending}
+                onEdit={pending.handleEditPending}
+                modLoaded={inspector.modLoaded}
+                saveOptions={pending.pendingSaveOptions}
+                onSaveOptionsChange={pending.setPendingSaveOptions}
               />
             </div>
           </div>
@@ -1171,29 +626,66 @@ export default function App() {
       </div>
 
       <StatusBar
-        cursorPos={cursorPos}
-        zoomLevel={zoomLevel}
+        cursorPos={viewport.cursorPos}
+        zoomLevel={viewport.zoomLevel}
         status={status}
-        activeTool={activeTool}
-        activeColor={activeColor}
-        provinceCount={provinceCount}
+        activeTool={painting.activeTool}
+        activeColor={painting.activeColor}
+        provinceCount={pending.provinceCount}
       />
 
-      {showReconcileDialog && (
+      {save.showReconcileDialog && (
         <ReconcileDialog
-          orphanedProvinces={reconcileOrphans}
-          orphanedParents={reconcileParents}
-          onConfirm={handleReconcileConfirm}
-          onCancel={handleReconcileCancel}
+          orphanedProvinces={save.reconcileOrphans}
+          orphanedParents={save.reconcileParents}
+          onConfirm={save.handleReconcileConfirm}
+          onCancel={save.handleReconcileCancel}
         />
       )}
 
-      {showPendingOrphanDialog && pendingOrphans.length > 0 && (
-        <PendingOrphanDialog
-          orphanedEntries={pendingOrphans}
-          onConfirm={handlePendingOrphanConfirm}
-          onCancel={handlePendingOrphanCancel}
+      {save.showDriftDialog && save.driftRemaps.length > 0 && (
+        <IdDriftDialog
+          remaps={save.driftRemaps}
+          onConfirm={save.handleDriftConfirm}
+          onCancel={save.handleDriftCancel}
         />
+      )}
+
+      {pending.showPendingOrphanDialog && pending.pendingOrphans.length > 0 && (
+        <PendingOrphanDialog
+          orphanedEntries={pending.pendingOrphans}
+          onConfirm={pending.handlePendingOrphanConfirm}
+          onCancel={pending.handlePendingOrphanCancel}
+        />
+      )}
+
+      {draft.showSaveDraftDialog && (
+        <SaveDraftDialog
+          onSave={draft.handleSaveDraftConfirm}
+          onCancel={draft.handleSaveDraftCancel}
+          defaultName={draft.draftLoadedName ?? undefined}
+        />
+      )}
+
+      {draft.showDraftListDialog && draft.draftList.length > 0 && (
+        <DraftListDialog
+          drafts={draft.draftList}
+          onSelect={draft.handleDraftSelected}
+          onDelete={draft.handleDraftDelete}
+          onCancel={draft.handleDraftListCancel}
+        />
+      )}
+
+      {draft.showUnsavedDraftDialog && (
+        <UnsavedDraftDialog
+          onSaveDraft={draft.handleUnsavedSave}
+          onDiscard={draft.handleUnsavedDiscard}
+          onCancel={draft.handleUnsavedCancel}
+        />
+      )}
+
+      {mapLoader.loadingMessage && (
+        <LoadingOverlay message={mapLoader.loadingMessage} />
       )}
     </div>
   );
