@@ -130,6 +130,7 @@ VMP is scoped to province painting and province file generation. It does **not**
 - **`map_data/default.map`** — Sea zones, impassable terrain, river/lake province lists, and other map classification entries must be edited manually or via another tool. VMP's reconcile operation can remap province IDs in `default.map` when renumbering, but it is an experimental feature and should not be relied on for this process.
 - **Geographical region mappings** — `common/geographical_region/*.txt` files that group provinces into named regions are not touched by VMP. These must be maintained manually.
 - **Title-to-province assignments beyond baronies** — VMP inserts barony entries into `landed_titles`, but linking counties to duchies, kingdoms, and empires in the de jure hierarchy is left to you.
+- **Map locators for activities, sieges, battles, etc.** - I cannot find a reliable way to generate stubs into GFX files for location blocks, VMP will kickstart you for the provinces and IDs making sure your definitions.csv files stay sane but the best tool for the GFX locations is still the in-game map editor.
 
 These are intentional scope decisions. VMP is a painting and stub-generation tool — the broader map structure should be handled by you directly or with other tooling of your choice.
 
@@ -143,7 +144,7 @@ These are intentional scope decisions. VMP is a painting and stub-generation too
 
 - ~~**Other Tool Compatibility** — Looking into optimizing data creation times to ensure compatibility with other tools like Xorrad's meckt, VMP's main focus is province painting, never ever do I want to lock you into this app as your sole workflow, pick your own arsenal, and I want to help you with doing that painlessly.~~ - **Implemented**, IDs are now assigned at paint time with the option to only write the definitions.csv entry
 
-- **Auto Divide** - Paint a blob on the map, select it, specify the amount of provinces you want to divide it into, watch a live (possibly) preview, accept, receive auto generated provinces to be adjusted manually, will use Voronoi diagram seeding (most likely).
+- ~~**Auto Divide** - Paint a blob on the map, select it, specify the amount of provinces you want to divide it into, watch a live (possibly) preview, accept, receive auto generated provinces to be adjusted manually, will use Voronoi diagram seeding (most likely).~~ - Included as voronoi generation in 2.0.0
 
 ---
 
