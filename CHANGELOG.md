@@ -1,5 +1,50 @@
 # Changelog
 
+## v2.1.0-beta — Multi-Tab, Cross-Tab Copy-Paste & Close Guard
+
+### New Features
+
+**Multi-Tab Editing**
+Open up to 4 maps simultaneously in separate tabs. Each tab runs a fully isolated instance with its own engine, registry, undo history, and pending provinces. Switch between tabs freely — only the active tab renders, keeping GPU usage in check. Tab labels auto-update to the loaded mod folder name, and a dirty indicator (•) marks tabs with unsaved changes.
+
+**Cross-Tab Copy-Paste**
+Copy provinces or arbitrary pixel regions from one tab and paste them into another. Two selection modes are available:
+- **Province mode** — Selects entire provinces within the lasso polygon. Only pixels belonging to those provinces are copied.
+- **Normal mode** — Selects all non-empty pixels within the lasso polygon regardless of province boundaries.
+
+Hit **Copy** on the selection action bar (or use the toolbar), then **Ctrl+V** in any tab to enter paste mode. A draggable preview appears at screen center — position it, then **Accept** to write the pixels.
+
+**Paste Resize & Rotate**
+Scale and rotate the paste buffer before committing. The floating paste toolbar provides:
+- **Scale**: ±10% step buttons, or click the percentage to select scale for fine adjustment
+- **Rotation**: ±15° step buttons, or click the degree value to select rotation for fine adjustment
+- **Ctrl+Scroll**: Fine-grained adjustment (~2% scale or ~2° rotation per tick) for whichever mode is active
+- **Keyboard**: `-`/`+` for scale, `[`/`]` for rotation, `0` to reset
+
+All transforms use nearest-neighbor interpolation to preserve exact RGB province colors — no blending or anti-aliasing that would create invalid mixed colors. New/unknown colors encountered during paste are auto-registered as pending provinces.
+
+**Multi-Tab Close Guard**
+When closing the app with unsaved changes across multiple tabs, a global dialog lists all dirty tabs with checkboxes. Select which tabs to save, then saves run sequentially before the app closes. Unselected tabs are discarded. In single-tab mode, the existing per-tab unsaved draft dialog is used instead.
+
+### Improvements
+
+**Selection Action Bar**
+The floating action bar during lasso selection now includes a mode toggle (Province/Normal), a Copy button, and shows the Harmonize option only in Province mode. The bar appears whenever provinces are selected regardless of the active tool.
+
+### Shortcuts
+
+| Key | Action |
+|-----|--------|
+| `L` | Lasso select |
+| `Ctrl+V` | Paste from clipboard |
+| `-` / `+` | Scale paste ±10% |
+| `[` / `]` | Rotate paste ±15° |
+| `0` | Reset paste transforms |
+| `Ctrl+Scroll` | Fine-adjust active paste parameter |
+| `Escape` | Cancel paste / clear selection |
+
+---
+
 ## v2.0.0 — Lasso Selection, Voronoi Generation & Draft System
 
 ### New Features

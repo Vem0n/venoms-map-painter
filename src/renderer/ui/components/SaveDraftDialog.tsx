@@ -70,14 +70,17 @@ export default function SaveDraftDialog({ onSave, onCancel, defaultName }: SaveD
         />
 
         <div style={footerStyle}>
-          <button style={cancelBtnStyle} onClick={onCancel}>Cancel</button>
-          <button
-            style={name.trim() ? saveBtnStyle : saveBtnDisabledStyle}
-            onClick={handleSubmit}
-            disabled={!name.trim()}
-          >
-            Save Draft
-          </button>
+          <p style={footnoteStyle}>This will save the draft for the active tab only.</p>
+          <div style={{ display: 'flex', gap: theme.space.md }}>
+            <button style={cancelBtnStyle} onClick={onCancel}>Cancel</button>
+            <button
+              style={name.trim() ? saveBtnStyle : saveBtnDisabledStyle}
+              onClick={handleSubmit}
+              disabled={!name.trim()}
+            >
+              Save Draft
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -140,9 +143,18 @@ const inputFieldStyle: React.CSSProperties = {
   boxSizing: 'border-box',
 };
 
+const footnoteStyle: React.CSSProperties = {
+  color: theme.text.muted,
+  fontSize: theme.font.sizeXs,
+  fontFamily: theme.font.family,
+  fontStyle: 'italic',
+  margin: 0,
+};
+
 const footerStyle: React.CSSProperties = {
   display: 'flex',
-  justifyContent: 'flex-end',
+  justifyContent: 'space-between',
+  alignItems: 'center',
   gap: theme.space.md,
   marginTop: theme.space.xl,
   borderTop: `1px solid ${theme.border.muted}`,

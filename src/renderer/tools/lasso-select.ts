@@ -144,6 +144,200 @@ export function collectLassoColors(
 }
 
 /**
+ * Pixel extraction result for copy operations.
+ * Contains a bounding-box-sized RGBA buffer with a mask indicating
+ * which pixels are part of the selection.
+ */
+export interface LassoPixelResult {
+  /** RGBA pixel data (width × height × 4) */
+  pixels: Uint8ClampedArray;
+  /** Per-pixel mask: 1 = included, 0 = excluded */
+  mask: Uint8Array;
+  /** Bounding box width */
+  width: number;
+  /** Bounding box height */
+  height: number;
+}
+
+/**
+ * Extract raw pixel data within a lasso polygon (normal select copy).
+ * Uses scanline intersection to iterate pixels inside the polygon.
+ * Skips empty colors so they don't overwrite existing provinces on paste.
+ */
+export function collectLassoPixels(
+  engine: TileEngine,
+  polygon: LassoPoint[],
+  emptyColors: Set<string>,
+): Promise<LassoPixelResult> {
+  const { width: mapWidth, height: mapHeight } = engine.getMapSize();
+
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const p of polygon) {
+    if (p.x < minX) minX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y > maxY) maxY = p.y;
+  }
+  minX = Math.max(0, Math.floor(minX));
+  minY = Math.max(0, Math.floor(minY));
+  maxX = Math.min(mapWidth - 1, Math.ceil(maxX));
+  maxY = Math.min(mapHeight - 1, Math.ceil(maxY));
+
+  const w = maxX - minX + 1;
+  const h = maxY - minY + 1;
+  const pixels = new Uint8ClampedArray(w * h * 4);
+  const mask = new Uint8Array(w * h);
+  const yieldInterval = 128;
+  let y = minY;
+
+  return new Promise((resolve) => {
+    const processRows = (): void => {
+      const endY = Math.min(y + yieldInterval, maxY + 1);
+
+      for (; y < endY; y++) {
+        const xs = scanlineIntersections(y, polygon);
+        for (let p = 0; p + 1 < xs.length; p += 2) {
+          const x0 = Math.max(minX, xs[p]);
+          const x1 = Math.min(maxX, xs[p + 1]);
+
+          for (let x = x0; x <= x1; x++) {
+            const px = engine.getPixel(x, y);
+            const key = rgbToKey(px);
+            if (emptyColors.has(key)) continue;
+
+            const localX = x - minX;
+            const localY = y - minY;
+            const idx = localY * w + localX;
+            pixels[idx * 4] = px.r;
+            pixels[idx * 4 + 1] = px.g;
+            pixels[idx * 4 + 2] = px.b;
+            pixels[idx * 4 + 3] = 255;
+            mask[idx] = 1;
+          }
+        }
+      }
+
+      if (y <= maxY) {
+        setTimeout(processRows, 0);
+      } else {
+        resolve({ pixels, mask, width: w, height: h });
+      }
+    };
+
+    processRows();
+  });
+}
+
+/**
+ * Extract pixel data for all provinces in a color set (province select copy).
+ * Scans tile buffers for matching colors. Uses tileSubset for optimization.
+ */
+export function collectProvincePixels(
+  engine: TileEngine,
+  selectedColors: Set<string>,
+  tileSubset?: ReadonlySet<number>,
+): Promise<LassoPixelResult> {
+  const { width: mapWidth, height: mapHeight } = engine.getMapSize();
+  const { tilesX, tilesY } = engine.getTileGridSize();
+  const TILE = 512;
+
+  // Convert color keys to packed integers for fast comparison
+  const packedColors = new Set<number>();
+  for (const key of selectedColors) {
+    const parts = key.split(',');
+    packedColors.add((parseInt(parts[0], 10) << 16) | (parseInt(parts[1], 10) << 8) | parseInt(parts[2], 10));
+  }
+
+  const totalTiles = tilesX * tilesY;
+  const tileIndices: number[] = [];
+  for (let i = 0; i < totalTiles; i++) {
+    if (tileSubset && !tileSubset.has(i)) continue;
+    tileIndices.push(i);
+  }
+
+  // First pass: find bounding box
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const tileIdx of tileIndices) {
+    const buf = engine.getTileBuffer(tileIdx);
+    if (!buf) continue;
+    const tx = tileIdx % tilesX;
+    const ty = Math.floor(tileIdx / tilesX);
+    const baseGx = tx * TILE;
+    const baseGy = ty * TILE;
+    const validW = Math.min(TILE, mapWidth - baseGx);
+    const validH = Math.min(TILE, mapHeight - baseGy);
+
+    for (let ly = 0; ly < validH; ly++) {
+      for (let lx = 0; lx < validW; lx++) {
+        const off = (ly * TILE + lx) * 4;
+        const packed = (buf[off] << 16) | (buf[off + 1] << 8) | buf[off + 2];
+        if (packedColors.has(packed)) {
+          const gx = baseGx + lx;
+          const gy = baseGy + ly;
+          if (gx < minX) minX = gx;
+          if (gy < minY) minY = gy;
+          if (gx > maxX) maxX = gx;
+          if (gy > maxY) maxY = gy;
+        }
+      }
+    }
+  }
+
+  if (minX > maxX) {
+    return Promise.resolve({ pixels: new Uint8ClampedArray(0), mask: new Uint8Array(0), width: 0, height: 0 });
+  }
+
+  const w = maxX - minX + 1;
+  const h = maxY - minY + 1;
+  const pixels = new Uint8ClampedArray(w * h * 4);
+  const resultMask = new Uint8Array(w * h);
+  let cursor = 0;
+
+  return new Promise((resolve) => {
+    const processChunk = (): void => {
+      const end = Math.min(cursor + 4, tileIndices.length);
+
+      for (; cursor < end; cursor++) {
+        const tileIdx = tileIndices[cursor];
+        const buf = engine.getTileBuffer(tileIdx);
+        if (!buf) continue;
+        const tx = tileIdx % tilesX;
+        const ty = Math.floor(tileIdx / tilesX);
+        const baseGx = tx * TILE;
+        const baseGy = ty * TILE;
+        const validW = Math.min(TILE, mapWidth - baseGx);
+        const validH = Math.min(TILE, mapHeight - baseGy);
+
+        for (let ly = 0; ly < validH; ly++) {
+          for (let lx = 0; lx < validW; lx++) {
+            const off = (ly * TILE + lx) * 4;
+            const packed = (buf[off] << 16) | (buf[off + 1] << 8) | buf[off + 2];
+            if (packedColors.has(packed)) {
+              const localX = baseGx + lx - minX;
+              const localY = baseGy + ly - minY;
+              const idx = localY * w + localX;
+              pixels[idx * 4] = buf[off];
+              pixels[idx * 4 + 1] = buf[off + 1];
+              pixels[idx * 4 + 2] = buf[off + 2];
+              pixels[idx * 4 + 3] = 255;
+              resultMask[idx] = 1;
+            }
+          }
+        }
+      }
+
+      if (cursor < tileIndices.length) {
+        setTimeout(processChunk, 0);
+      } else {
+        resolve({ pixels, mask: resultMask, width: w, height: h });
+      }
+    };
+
+    processChunk();
+  });
+}
+
+/**
  * Get the province color at a single global coordinate, or null if empty/OOB.
  */
 export function getColorAtPoint(
