@@ -57,7 +57,35 @@ All tools live in the vertical toolbar on the left. Hover any icon for a tooltip
 
 **Hover Inspect** (`H`) — Toggle a floating tooltip that follows your cursor across the map. Shows the province's color swatch, RGB values, ID, name, title, culture, and religion — regardless of which sidebar tab is active.
 
+**Lasso Select** (`L`) — Draw a freehand polygon to select provinces. Two modes available via the floating action bar:
+- **Province mode** — Selects whole provinces within the polygon. Harmonize Colors repaints them with a cohesive palette derived from your brush hue.
+- **Normal mode** — Selects all non-empty pixels within the polygon regardless of province boundaries.
+
+Copy your selection, then Ctrl+V in any tab to paste. The paste preview can be repositioned by dragging, and scaled/rotated before committing.
+
 **Grid** — Toggles a tile boundary overlay for alignment reference.
+
+---
+
+## Multi-Tab
+
+Open up to 4 maps simultaneously in separate tabs. Each tab is a fully isolated instance with its own engine, registry, undo history, and pending provinces. Only the active tab renders. Tab labels show the loaded mod folder name, and a dirty indicator (•) marks unsaved tabs. When closing the app with unsaved changes, a dialog lists all dirty tabs so you can choose which to save.
+
+---
+
+## Copy-Paste
+
+Copy provinces or pixel regions from one tab and paste them into another:
+
+1. Use the **Lasso** tool to select an area
+2. Click **Copy** on the floating action bar
+3. Switch to any tab and press **Ctrl+V** to enter paste mode
+4. A draggable preview appears at screen center — drag to position
+5. Use the paste toolbar to **scale** (±10% steps or Ctrl+Scroll for ~2% per tick) and **rotate** (±15° steps or Ctrl+Scroll for ~2° per tick)
+6. Click the scale percentage or rotation degrees on the toolbar to toggle which parameter Ctrl+Scroll adjusts
+7. **Accept** to write pixels, **Cancel** or `Escape` to discard
+
+All transforms use nearest-neighbor interpolation — exact RGB values are preserved, no blending. New colors are auto-registered as pending provinces.
 
 ---
 
@@ -82,11 +110,18 @@ Four tabs that stay mounted across switches so you never lose form state:
 | `F` | Flood Fill |
 | `B` | Brush |
 | `E` | Eraser |
+| `L` | Lasso Select |
 | `H` | Hover Inspect |
 | `Ctrl+S` | Save (map image + all mod files) |
+| `Ctrl+Shift+S` | Save Draft |
 | `Ctrl+Z` | Undo |
 | `Ctrl+Y` / `Ctrl+Shift+Z` | Redo |
-| `Escape` | Cancel active picking mode |
+| `Ctrl+V` | Paste from clipboard |
+| `-` / `+` | Scale paste ±10% |
+| `[` / `]` | Rotate paste ±15° |
+| `0` | Reset paste transforms |
+| `Ctrl+Scroll` | Fine-adjust active paste parameter |
+| `Escape` | Cancel paste / clear selection / cancel picking |
 | Scroll | Zoom |
 | Middle / Right drag | Pan |
 
@@ -143,7 +178,7 @@ These are intentional scope decisions. VMP is a painting and stub-generation too
 
 - ~~**Other Tool Compatibility** — Looking into optimizing data creation times to ensure compatibility with other tools like Xorrad's meckt, VMP's main focus is province painting, never ever do I want to lock you into this app as your sole workflow, pick your own arsenal, and I want to help you with doing that painlessly.~~ - **Implemented**, IDs are now assigned at paint time with the option to only write the definitions.csv entry
 
-- **Auto Divide** - Paint a blob on the map, select it, specify the amount of provinces you want to divide it into, watch a live (possibly) preview, accept, receive auto generated provinces to be adjusted manually, will use Voronoi diagram seeding (most likely).
+- ~~**Auto Divide** - Paint a blob on the map, select it, specify the amount of provinces you want to divide it into, watch a live (possibly) preview, accept, receive auto generated provinces to be adjusted manually, will use Voronoi diagram seeding (most likely).~~ - **Implemented** as the Voronoi Province Generator in v2.0.0
 
 ---
 

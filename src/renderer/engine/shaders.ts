@@ -86,6 +86,47 @@ void main() {
 }
 `;
 
+/** Vertex shader for the paste preview quad — same camera transform as tiles */
+export const PASTE_VERTEX_SHADER = `#version 300 es
+precision highp float;
+
+uniform vec2 u_pastePosition;  // Top-left corner in global map coords
+uniform vec2 u_pasteSize;      // Width/height in pixels
+
+uniform vec2 u_cameraOffset;
+uniform float u_zoom;
+uniform vec2 u_resolution;
+
+in vec2 a_position;
+out vec2 v_texCoord;
+
+void main() {
+    v_texCoord = a_position;
+    vec2 worldPos = u_pastePosition + a_position * u_pasteSize;
+    vec2 screenPos = (worldPos - u_cameraOffset) * u_zoom;
+    vec2 clipPos = (screenPos / u_resolution) * 2.0 - 1.0;
+    clipPos.y = -clipPos.y;
+    gl_Position = vec4(clipPos, 0.0, 1.0);
+}
+`;
+
+/** Fragment shader for the paste preview — samples texture, discards transparent */
+export const PASTE_FRAGMENT_SHADER = `#version 300 es
+precision highp float;
+
+uniform sampler2D u_pasteTexture;
+
+in vec2 v_texCoord;
+out vec4 fragColor;
+
+void main() {
+    vec4 color = texture(u_pasteTexture, v_texCoord);
+    if (color.a < 0.01) discard;
+    // Slight transparency so user can see what's underneath
+    fragColor = vec4(color.rgb, 0.85);
+}
+`;
+
 /**
  * Compile a shader from source.
  */
@@ -125,6 +166,8 @@ export function createProgram(
 
   gl.attachShader(program, vertexShader);
   gl.attachShader(program, fragmentShader);
+  // Force a_position to location 0 so all programs share the same VAO
+  gl.bindAttribLocation(program, 0, 'a_position');
   gl.linkProgram(program);
 
   if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {

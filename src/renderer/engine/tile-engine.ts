@@ -13,7 +13,7 @@
 
 import { RGB, TileCoord, rgbToKey } from '@shared/types';
 import { TILE_SIZE, BYTES_PER_PIXEL, MIN_ZOOM, MAX_ZOOM } from '@shared/constants';
-import { createProgram, TILE_VERTEX_SHADER, TILE_FRAGMENT_SHADER } from './shaders';
+import { createProgram, TILE_VERTEX_SHADER, TILE_FRAGMENT_SHADER, PASTE_VERTEX_SHADER, PASTE_FRAGMENT_SHADER } from './shaders';
 
 export class TileEngine {
   private canvas: HTMLCanvasElement;
@@ -60,8 +60,25 @@ export class TileEngine {
   private heightmapOpacity = 0.5;
   private heightmapLoaded = false;
 
+  /** Paste preview overlay — single texture rendered as a world-space quad */
+  private pastePreviewTexture: WebGLTexture | null = null;
+  private pastePreviewX = 0;
+  private pastePreviewY = 0;
+  private pastePreviewW = 0;
+  private pastePreviewH = 0;
+  private showPastePreview = false;
+
   // WebGL resources
   private program: WebGLProgram;
+  private pasteProgram: WebGLProgram;
+  private pasteUniforms!: {
+    pastePosition: WebGLUniformLocation;
+    pasteSize: WebGLUniformLocation;
+    cameraOffset: WebGLUniformLocation;
+    zoom: WebGLUniformLocation;
+    resolution: WebGLUniformLocation;
+    pasteTexture: WebGLUniformLocation;
+  };
   private vao: WebGLVertexArrayObject;
   private uniforms: {
     tilePosition: WebGLUniformLocation;
@@ -111,6 +128,22 @@ export class TileEngine {
       heightmapTexture: getUniform('u_heightmapTexture'),
       showHeightmap: getUniform('u_showHeightmap'),
       heightmapOpacity: getUniform('u_heightmapOpacity'),
+    };
+
+    // Compile paste preview shader program
+    this.pasteProgram = createProgram(gl, PASTE_VERTEX_SHADER, PASTE_FRAGMENT_SHADER);
+    const getPasteUniform = (name: string): WebGLUniformLocation => {
+      const loc = gl.getUniformLocation(this.pasteProgram, name);
+      if (loc === null) throw new Error(`Paste uniform '${name}' not found`);
+      return loc;
+    };
+    this.pasteUniforms = {
+      pastePosition: getPasteUniform('u_pastePosition'),
+      pasteSize: getPasteUniform('u_pasteSize'),
+      cameraOffset: getPasteUniform('u_cameraOffset'),
+      zoom: getPasteUniform('u_zoom'),
+      resolution: getPasteUniform('u_resolution'),
+      pasteTexture: getPasteUniform('u_pasteTexture'),
     };
 
     // Create a unit-quad VAO (two triangles covering [0,0]-[1,1])
@@ -171,6 +204,13 @@ export class TileEngine {
     this.heightmapTextures.length = 0;
     this.showHeightmap = false;
     this.heightmapLoaded = false;
+
+    // Release paste preview
+    if (this.pastePreviewTexture) {
+      gl.deleteTexture(this.pastePreviewTexture);
+      this.pastePreviewTexture = null;
+    }
+    this.showPastePreview = false;
 
     this.dirtyTiles.clear();
     this.gpuDirtyTiles.clear();
@@ -420,6 +460,64 @@ export class TileEngine {
     return this.heightmapLoaded;
   }
 
+  /* ── Paste Preview ──────────────────────────────────────── */
+
+  /**
+   * Set the paste preview data and make it visible.
+   * Creates a GPU texture from the RGBA pixel buffer.
+   * Masked-out pixels should have alpha=0 in the buffer.
+   */
+  setPastePreview(pixels: Uint8ClampedArray, width: number, height: number, worldX: number, worldY: number): void {
+    const gl = this.gl;
+
+    // Clean up previous
+    if (this.pastePreviewTexture) {
+      gl.deleteTexture(this.pastePreviewTexture);
+    }
+
+    const tex = gl.createTexture();
+    if (!tex) return;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+    this.pastePreviewTexture = tex;
+    this.pastePreviewX = worldX;
+    this.pastePreviewY = worldY;
+    this.pastePreviewW = width;
+    this.pastePreviewH = height;
+    this.showPastePreview = true;
+  }
+
+  /** Update the paste preview world position (for dragging). */
+  updatePastePreviewPosition(worldX: number, worldY: number): void {
+    this.pastePreviewX = worldX;
+    this.pastePreviewY = worldY;
+  }
+
+  /** Get current paste preview position and size. */
+  getPastePreviewBounds(): { x: number; y: number; w: number; h: number } | null {
+    if (!this.showPastePreview) return null;
+    return { x: this.pastePreviewX, y: this.pastePreviewY, w: this.pastePreviewW, h: this.pastePreviewH };
+  }
+
+  /** Remove the paste preview and free GPU resources. */
+  clearPastePreview(): void {
+    if (this.pastePreviewTexture) {
+      this.gl.deleteTexture(this.pastePreviewTexture);
+      this.pastePreviewTexture = null;
+    }
+    this.showPastePreview = false;
+  }
+
+  /** Whether paste preview is currently visible. */
+  isPastePreviewVisible(): boolean {
+    return this.showPastePreview;
+  }
+
   /** Compute which tiles are visible in the current viewport */
   private getVisibleTiles(): TileCoord[] {
     const vpWidth = this.canvas.width / this.zoom;
@@ -534,6 +632,29 @@ export class TileEngine {
       gl.drawArrays(gl.TRIANGLES, 0, 6);
     }
 
+    // Draw paste preview quad (after all tiles, on top)
+    if (this.showPastePreview && this.pastePreviewTexture) {
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+      gl.useProgram(this.pasteProgram);
+      // VAO is still bound with the same quad geometry
+
+      gl.uniform2f(this.pasteUniforms.pastePosition, this.pastePreviewX, this.pastePreviewY);
+      gl.uniform2f(this.pasteUniforms.pasteSize, this.pastePreviewW, this.pastePreviewH);
+      gl.uniform2f(this.pasteUniforms.cameraOffset, this.offsetX, this.offsetY);
+      gl.uniform1f(this.pasteUniforms.zoom, this.zoom);
+      gl.uniform2f(this.pasteUniforms.resolution, cw, ch);
+
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.pastePreviewTexture);
+      gl.uniform1i(this.pasteUniforms.pasteTexture, 0);
+
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+      gl.disable(gl.BLEND);
+    }
+
     gl.bindVertexArray(null);
   }
 
@@ -620,6 +741,11 @@ export class TileEngine {
   /** Whether image has been loaded */
   isLoaded(): boolean {
     return this.loaded;
+  }
+
+  /** Get the underlying canvas element */
+  getCanvas(): HTMLCanvasElement {
+    return this.canvas;
   }
 
   /**

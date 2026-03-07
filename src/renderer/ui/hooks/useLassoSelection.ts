@@ -1,12 +1,13 @@
 /** Lasso multi-select state + handlers */
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import type { LassoPoint } from '@tools/lasso-select';
-import { collectLassoColors, getColorAtPoint } from '@tools/lasso-select';
-import { writeSelectionOverlay, clearSelectionOverlay } from '@tools/selection-overlay';
+import { collectLassoColors, collectLassoPixels, collectProvincePixels, getColorAtPoint } from '@tools/lasso-select';
+import { writeSelectionOverlay, writePolygonOverlay, clearSelectionOverlay } from '@tools/selection-overlay';
 import { rgbToKey, keyToRgb } from '@shared/types';
 import type { RGB, UndoAction } from '@shared/types';
 import type { EngineRef, ToolManagerRef, RegistryRef, UndoManagerRef } from './types';
+import type { SelectMode, CopyPasteManager } from '@tools/copy-paste-manager';
 
 export interface UseLassoSelectionParams {
   engineRef: EngineRef;
@@ -15,12 +16,16 @@ export interface UseLassoSelectionParams {
   undoManagerRef: UndoManagerRef;
   /** Ref to the current brush/paint color — used as palette base for harmonize. */
   activeColorRef: React.RefObject<RGB>;
+  /** Global copy-paste manager (owned by TabShell) */
+  copyPasteManager: CopyPasteManager;
   setStatus: (msg: string) => void;
   setDraftDirty: (dirty: boolean) => void;
   setModDirty: (dirty: boolean) => void;
   setModifiedProvinceIds: React.Dispatch<React.SetStateAction<Set<number>>>;
   /** Called after harmonize remaps a province color (syncs pending map). */
   onColorRemap: (oldColor: RGB, newColor: RGB) => void;
+  /** Called after a successful copy to show toast */
+  onCopyComplete: () => void;
 }
 
 /** Convert RGB to HSL hue (0-1). Returns 0 for achromatic colors. */
@@ -38,11 +43,17 @@ function rgbToHue(c: RGB): number {
 
 export function useLassoSelection({
   engineRef, toolManagerRef, registryRef, undoManagerRef, activeColorRef,
+  copyPasteManager,
   setStatus, setDraftDirty, setModDirty, setModifiedProvinceIds,
-  onColorRemap,
+  onColorRemap, onCopyComplete,
 }: UseLassoSelectionParams) {
   const [selectedProvinces, setSelectedProvinces] = useState<Set<string>>(new Set());
   const [harmonizing, setHarmonizing] = useState(false);
+  const [selectMode, setSelectMode] = useState<SelectMode>('province');
+  const [copying, setCopying] = useState(false);
+
+  /** Store the last polygon for normal select copy extraction */
+  const lastPolygonRef = useRef<LassoPoint[] | null>(null);
 
   /** Compute tile subset from SectorManager for a set of color keys. */
   const getTileSubset = useCallback((colorKeys: Set<string>): Set<number> | undefined => {
@@ -55,6 +66,7 @@ export function useLassoSelection({
     const engine = engineRef.current;
     if (engine) clearSelectionOverlay(engine);
     setSelectedProvinces(new Set());
+    lastPolygonRef.current = null;
   }, [engineRef]);
 
   const handleLassoComplete = useCallback(async (polygon: LassoPoint[]) => {
@@ -62,25 +74,45 @@ export function useLassoSelection({
     const tm = toolManagerRef.current;
     if (!engine || !engine.isLoaded()) return;
 
-    setStatus('Selecting provinces...');
     const emptySet = new Set(tm ? tm.getEmptyColors().map(c => rgbToKey(c)) : []);
-    const result = await collectLassoColors(engine, polygon, emptySet);
 
-    if (result.colors.size === 0) {
-      setStatus('No provinces in selection');
-      return;
+    if (selectMode === 'province') {
+      // Province select: collect unique colors, highlight entire provinces
+      setStatus('Selecting provinces...');
+      const result = await collectLassoColors(engine, polygon, emptySet);
+
+      if (result.colors.size === 0) {
+        setStatus('No provinces in selection');
+        return;
+      }
+
+      setSelectedProvinces(result.colors);
+      lastPolygonRef.current = null;
+      const tileSubset = getTileSubset(result.colors);
+      await writeSelectionOverlay(engine, result.colors, tileSubset);
+      setStatus(`Selected ${result.colors.size} province(s)`);
+    } else {
+      // Normal select: highlight all pixels within the polygon
+      setStatus('Selecting area...');
+      lastPolygonRef.current = polygon;
+
+      // Also collect colors for the count display (but overlay covers the polygon area)
+      const result = await collectLassoColors(engine, polygon, emptySet);
+      setSelectedProvinces(result.colors);
+
+      await writePolygonOverlay(engine, polygon, emptySet);
+      const pixelCount = estimatePolygonArea(polygon);
+      setStatus(`Selected area (~${pixelCount.toLocaleString()} pixels, ${result.colors.size} color(s))`);
     }
-
-    setSelectedProvinces(result.colors);
-    const tileSubset = getTileSubset(result.colors);
-    await writeSelectionOverlay(engine, result.colors, tileSubset);
-    setStatus(`Selected ${result.colors.size} province(s)`);
-  }, [engineRef, toolManagerRef, setStatus, getTileSubset]);
+  }, [engineRef, toolManagerRef, setStatus, getTileSubset, selectMode]);
 
   const handleLassoShiftClick = useCallback(async (gx: number, gy: number) => {
     const engine = engineRef.current;
     const tm = toolManagerRef.current;
     if (!engine || !engine.isLoaded()) return;
+
+    // Shift-click only works in province select mode
+    if (selectMode !== 'province') return;
 
     const emptySet = new Set(tm ? tm.getEmptyColors().map(c => rgbToKey(c)) : []);
     const colorKey = getColorAtPoint(engine, gx, gy, emptySet);
@@ -105,7 +137,61 @@ export function useLassoSelection({
 
       return next;
     });
-  }, [engineRef, toolManagerRef, setStatus, getTileSubset]);
+  }, [engineRef, toolManagerRef, setStatus, getTileSubset, selectMode]);
+
+  const handleCopy = useCallback(async () => {
+    const engine = engineRef.current;
+    const tm = toolManagerRef.current;
+    if (!engine || !engine.isLoaded()) return;
+    if (selectedProvinces.size === 0) return;
+
+    setCopying(true);
+    setStatus('Copying...');
+
+    try {
+      const emptySet = new Set(tm ? tm.getEmptyColors().map(c => rgbToKey(c)) : []);
+
+      if (selectMode === 'normal' && lastPolygonRef.current) {
+        // Normal select: extract pixels within polygon
+        const result = await collectLassoPixels(engine, lastPolygonRef.current, emptySet);
+        if (result.width === 0) {
+          setStatus('Nothing to copy');
+          return;
+        }
+        copyPasteManager.copy({
+          pixels: result.pixels,
+          mask: result.mask,
+          width: result.width,
+          height: result.height,
+          mode: 'normal',
+        });
+        setStatus(`Copied ${result.width}×${result.height} area`);
+      } else {
+        // Province select: extract all pixels of selected colors
+        const tileSubset = getTileSubset(selectedProvinces);
+        const result = await collectProvincePixels(engine, selectedProvinces, tileSubset);
+        if (result.width === 0) {
+          setStatus('Nothing to copy');
+          return;
+        }
+        copyPasteManager.copy({
+          pixels: result.pixels,
+          mask: result.mask,
+          width: result.width,
+          height: result.height,
+          mode: 'province',
+        });
+        setStatus(`Copied ${selectedProvinces.size} province(s)`);
+      }
+
+      onCopyComplete();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setStatus(`Copy error: ${msg}`);
+    } finally {
+      setCopying(false);
+    }
+  }, [engineRef, toolManagerRef, selectedProvinces, selectMode, copyPasteManager, getTileSubset, setStatus, onCopyComplete]);
 
   const handleHarmonize = useCallback(async () => {
     const engine = engineRef.current;
@@ -212,10 +298,23 @@ export function useLassoSelection({
   }, [engineRef, registryRef, undoManagerRef, selectedProvinces, setStatus, setDraftDirty, setModDirty, setModifiedProvinceIds, getTileSubset, onColorRemap]);
 
   return {
-    selectedProvinces, harmonizing,
+    selectedProvinces, harmonizing, selectMode, copying,
+    setSelectMode,
     clearSelection,
     handleLassoComplete,
     handleLassoShiftClick,
     handleHarmonize,
+    handleCopy,
   };
+}
+
+/** Rough area estimate using the shoelace formula */
+function estimatePolygonArea(polygon: LassoPoint[]): number {
+  let area = 0;
+  const n = polygon.length;
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    area += polygon[j].x * polygon[i].y;
+    area -= polygon[i].x * polygon[j].y;
+  }
+  return Math.round(Math.abs(area) / 2);
 }

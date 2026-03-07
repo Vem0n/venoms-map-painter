@@ -1,17 +1,23 @@
 /**
- * SelectionActionBar — Floating action bar shown on the canvas when provinces
- * are selected via lasso. Provides Harmonize Colors and Clear actions.
+ * SelectionActionBar — Floating action bar shown on the canvas when the lasso
+ * tool is active. Provides select mode toggle, Harmonize Colors, Copy, and Clear.
  */
 
 import React, { useState } from 'react';
 import { theme } from '../theme';
-import { PaletteIcon, XIcon } from './icons';
+import { PaletteIcon, XIcon, CopyIcon } from './icons';
+import type { SelectMode } from '@tools/copy-paste-manager';
 
 interface SelectionActionBarProps {
   selectedCount: number;
+  selectMode: SelectMode;
+  onSelectModeChange: (mode: SelectMode) => void;
   onHarmonize: () => void;
+  onCopy: () => void;
   onClear: () => void;
   harmonizing: boolean;
+  copying: boolean;
+  lassoActive: boolean;
 }
 
 function ActionButton({ onClick, disabled, children, title, accent }: {
@@ -54,10 +60,53 @@ function ActionButton({ onClick, disabled, children, title, accent }: {
   );
 }
 
+function ModeToggle({ mode, onChange }: { mode: SelectMode; onChange: (m: SelectMode) => void }) {
+  return (
+    <div style={{
+      display: 'flex',
+      borderRadius: theme.radius.sm,
+      overflow: 'hidden',
+      border: `1px solid ${theme.border.muted}`,
+    }}>
+      <ModeButton label="Province" active={mode === 'province'} onClick={() => onChange('province')} />
+      <ModeButton label="Normal" active={mode === 'normal'} onClick={() => onChange('normal')} />
+    </div>
+  );
+}
+
+function ModeButton({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  const [hover, setHover] = useState(false);
+  return (
+    <button
+      onClick={onClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        padding: '4px 10px',
+        border: 'none',
+        fontSize: theme.font.sizeXs,
+        fontFamily: theme.font.family,
+        fontWeight: active ? 600 : 400,
+        cursor: 'pointer',
+        transition: theme.transition.fast,
+        background: active ? theme.accent.blue : (hover ? theme.bg.elevated : 'transparent'),
+        color: active ? '#fff' : theme.text.muted,
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
 export default function SelectionActionBar({
-  selectedCount, onHarmonize, onClear, harmonizing,
+  selectedCount, selectMode, onSelectModeChange,
+  onHarmonize, onCopy, onClear,
+  harmonizing, copying, lassoActive,
 }: SelectionActionBarProps) {
-  if (selectedCount === 0) return null;
+  // Show when lasso is active (for mode toggle) OR when there's a selection
+  if (!lassoActive && selectedCount === 0) return null;
+
+  const busy = harmonizing || copying;
 
   return (
     <div style={{
@@ -79,36 +128,58 @@ export default function SelectionActionBar({
         padding: '6px 8px',
         boxShadow: theme.shadow.dropdown,
       }}>
-        <span style={{
-          color: theme.text.muted,
-          fontSize: theme.font.sizeSm,
-          fontFamily: theme.font.family,
-          padding: '0 8px 0 4px',
-          whiteSpace: 'nowrap',
-        }}>
-          {selectedCount} province{selectedCount !== 1 ? 's' : ''}
-        </span>
+        <ModeToggle mode={selectMode} onChange={onSelectModeChange} />
 
-        <div style={{ width: 1, height: 20, background: theme.border.default }} />
+        {selectedCount > 0 && (
+          <>
+            <div style={{ width: 1, height: 20, background: theme.border.default, margin: '0 2px' }} />
 
-        <ActionButton
-          onClick={onHarmonize}
-          disabled={harmonizing}
-          title="Generate a cohesive color palette for selected provinces"
-          accent
-        >
-          <PaletteIcon size={14} color="#fff" />
-          {harmonizing ? 'Harmonizing...' : 'Harmonize Colors'}
-        </ActionButton>
+            <span style={{
+              color: theme.text.muted,
+              fontSize: theme.font.sizeSm,
+              fontFamily: theme.font.family,
+              padding: '0 4px',
+              whiteSpace: 'nowrap',
+            }}>
+              {selectMode === 'province'
+                ? `${selectedCount} province${selectedCount !== 1 ? 's' : ''}`
+                : `${selectedCount} color${selectedCount !== 1 ? 's' : ''}`
+              }
+            </span>
 
-        <ActionButton
-          onClick={onClear}
-          disabled={harmonizing}
-          title="Clear selection"
-        >
-          <XIcon size={12} />
-          Clear
-        </ActionButton>
+            <div style={{ width: 1, height: 20, background: theme.border.default, margin: '0 2px' }} />
+
+            {selectMode === 'province' && (
+              <ActionButton
+                onClick={onHarmonize}
+                disabled={busy}
+                title="Generate a cohesive color palette for selected provinces"
+                accent
+              >
+                <PaletteIcon size={14} color="#fff" />
+                {harmonizing ? 'Harmonizing...' : 'Harmonize'}
+              </ActionButton>
+            )}
+
+            <ActionButton
+              onClick={onCopy}
+              disabled={busy}
+              title="Copy selection to clipboard (Ctrl+C)"
+            >
+              <CopyIcon size={12} />
+              {copying ? 'Copying...' : 'Copy'}
+            </ActionButton>
+
+            <ActionButton
+              onClick={onClear}
+              disabled={busy}
+              title="Clear selection"
+            >
+              <XIcon size={12} />
+              Clear
+            </ActionButton>
+          </>
+        )}
       </div>
     </div>
   );

@@ -147,15 +147,18 @@ export default function ReconcileDialog({
 
         {/* Footer */}
         <div style={footerStyle}>
-          <button style={cancelBtnStyle} onClick={onCancel}>Cancel</button>
-          <button
-            style={removeCount > 0 ? confirmBtnStyle : saveBtnStyle}
-            onClick={handleConfirm}
-          >
-            {removeCount > 0
-              ? `Remove & Renumber (${removeCount})`
-              : 'Save Without Changes'}
-          </button>
+          <p style={footnoteStyle}>Saving applies to the active tab only.</p>
+          <div style={{ display: 'flex', gap: theme.space.md }}>
+            <button style={cancelBtnStyle} onClick={onCancel}>Cancel</button>
+            <button
+              style={removeCount > 0 ? confirmBtnStyle : saveBtnStyle}
+              onClick={handleConfirm}
+            >
+              {removeCount > 0
+                ? `Remove & Renumber (${removeCount})`
+                : 'Save Without Changes'}
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -312,9 +315,18 @@ const warningStyle: React.CSSProperties = {
   lineHeight: 1.5,
 };
 
+const footnoteStyle: React.CSSProperties = {
+  color: theme.text.muted,
+  fontSize: theme.font.sizeXs,
+  fontFamily: theme.font.family,
+  fontStyle: 'italic',
+  margin: 0,
+};
+
 const footerStyle: React.CSSProperties = {
   display: 'flex',
-  justifyContent: 'flex-end',
+  justifyContent: 'space-between',
+  alignItems: 'center',
   gap: theme.space.md,
   marginTop: theme.space.xl,
   borderTop: `1px solid ${theme.border.muted}`,
