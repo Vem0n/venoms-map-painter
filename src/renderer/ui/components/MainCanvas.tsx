@@ -51,9 +51,15 @@ export interface MainCanvasProps {
   onLassoComplete?: (polygon: LassoPoint[]) => void;
   /** Called on shift+click during lasso mode for single-province toggle */
   onLassoShiftClick?: (gx: number, gy: number) => void;
+  /** When true, paste mode is active — left drag moves the paste preview */
+  pasteMode?: boolean;
+  /** Called with world-space delta when user drags during paste mode */
+  onPasteDrag?: (worldDx: number, worldDy: number) => void;
+  /** Called with wheel delta (+1/-1) during paste mode when Ctrl is held */
+  onPasteWheel?: (delta: number) => void;
 }
 
-export default function MainCanvas({ onEngineReady, onCursorMove, onZoomChange, toolManagerRef, pickingEmpty, onPickEmpty, pickingLock, onPickLock, pickingColor, onPickColor, inspectorMode, onProvinceClick, hoverInspect, registryRef, pickingGenerator, onPickGenerator, lassoActive, onLassoComplete, onLassoShiftClick }: MainCanvasProps) {
+export default function MainCanvas({ onEngineReady, onCursorMove, onZoomChange, toolManagerRef, pickingEmpty, onPickEmpty, pickingLock, onPickLock, pickingColor, onPickColor, inspectorMode, onProvinceClick, hoverInspect, registryRef, pickingGenerator, onPickGenerator, lassoActive, onLassoComplete, onLassoShiftClick, pasteMode, onPasteDrag, onPasteWheel }: MainCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<TileEngine | null>(null);
@@ -65,6 +71,16 @@ export default function MainCanvas({ onEngineReady, onCursorMove, onZoomChange, 
   const isLassoDrawingRef = useRef(false);
   const lassoPointsRef = useRef<LassoPoint[]>([]);
   const lassoCanvasRef = useRef<HTMLCanvasElement>(null);
+
+  // Paste drag state
+  const isPasteDraggingRef = useRef(false);
+  const lastPasteMouseRef = useRef({ x: 0, y: 0 });
+
+  // Refs for paste mode wheel interception (used by imperative wheel handler)
+  const pasteModeRef = useRef(pasteMode);
+  pasteModeRef.current = pasteMode;
+  const onPasteWheelRef = useRef(onPasteWheel);
+  onPasteWheelRef.current = onPasteWheel;
 
   // Hover inspect tooltip state
   const [tooltipData, setTooltipData] = useState<{
@@ -142,6 +158,14 @@ export default function MainCanvas({ onEngineReady, onCursorMove, onZoomChange, 
     // so we can call preventDefault() without Chrome warnings
     const handleWheel = (e: WheelEvent): void => {
       e.preventDefault();
+
+      // Ctrl+wheel during paste mode → fine-grained scale/rotation adjustment
+      if (pasteModeRef.current && e.ctrlKey && onPasteWheelRef.current) {
+        const delta = e.deltaY < 0 ? 1 : -1;
+        onPasteWheelRef.current(delta);
+        return;
+      }
+
       const canvasRect = canvas.getBoundingClientRect();
       const screenX = e.clientX - canvasRect.left;
       const screenY = e.clientY - canvasRect.top;
@@ -196,6 +220,13 @@ export default function MainCanvas({ onEngineReady, onCursorMove, onZoomChange, 
     if (e.button === 0) {
       const coords = getGlobalCoords(e);
       if (!coords) return;
+
+      // Paste mode: left click starts drag
+      if (pasteMode && onPasteDrag) {
+        isPasteDraggingRef.current = true;
+        lastPasteMouseRef.current = { x: e.clientX, y: e.clientY };
+        return;
+      }
 
       // Lasso mode: draw polygon or shift+click toggle
       if (lassoActive) {
@@ -266,7 +297,7 @@ export default function MainCanvas({ onEngineReady, onCursorMove, onZoomChange, 
         tm.handleDragStart(coords.gx, coords.gy);
       }
     }
-  }, [getGlobalCoords, toolManagerRef, pickingEmpty, onPickEmpty, pickingLock, onPickLock, pickingColor, onPickColor, inspectorMode, onProvinceClick, pickingGenerator, onPickGenerator, lassoActive, onLassoShiftClick]);
+  }, [getGlobalCoords, toolManagerRef, pickingEmpty, onPickEmpty, pickingLock, onPickLock, pickingColor, onPickColor, inspectorMode, onProvinceClick, pickingGenerator, onPickGenerator, lassoActive, onLassoShiftClick, pasteMode, onPasteDrag]);
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
     const engine = engineRef.current;
@@ -294,6 +325,21 @@ export default function MainCanvas({ onEngineReady, onCursorMove, onZoomChange, 
       }
     } else if (!hoverInspect) {
       setTooltipData(null);
+    }
+
+    // Handle paste dragging
+    if (isPasteDraggingRef.current && onPasteDrag) {
+      const engine = engineRef.current;
+      if (engine) {
+        const dx = e.clientX - lastPasteMouseRef.current.x;
+        const dy = e.clientY - lastPasteMouseRef.current.y;
+        // Convert screen delta to world delta
+        const worldDx = dx / engine.getZoom();
+        const worldDy = dy / engine.getZoom();
+        onPasteDrag(worldDx, worldDy);
+        lastPasteMouseRef.current = { x: e.clientX, y: e.clientY };
+      }
+      return;
     }
 
     // Handle lasso drawing
@@ -326,11 +372,17 @@ export default function MainCanvas({ onEngineReady, onCursorMove, onZoomChange, 
         tm.handleDragMove(coords.gx, coords.gy);
       }
     }
-  }, [onCursorMove, getGlobalCoords, toolManagerRef, hoverInspect, registryRef, drawLassoOutline]);
+  }, [onCursorMove, getGlobalCoords, toolManagerRef, hoverInspect, registryRef, drawLassoOutline, onPasteDrag]);
 
   const handleMouseUp = useCallback((e: React.MouseEvent) => {
     if (e.button === 1 || e.button === 2) {
       isPanningRef.current = false;
+    }
+
+    // Paste drag complete
+    if (e.button === 0 && isPasteDraggingRef.current) {
+      isPasteDraggingRef.current = false;
+      return;
     }
 
     // Lasso complete
@@ -363,6 +415,7 @@ export default function MainCanvas({ onEngineReady, onCursorMove, onZoomChange, 
 
   const handleMouseLeave = useCallback(() => {
     isPanningRef.current = false;
+    isPasteDraggingRef.current = false;
     setTooltipData(null);
     // Cancel lasso drawing on leave
     if (isLassoDrawingRef.current) {
@@ -386,7 +439,7 @@ export default function MainCanvas({ onEngineReady, onCursorMove, onZoomChange, 
   return (
     <div
       ref={containerRef}
-      style={{ flex: 1, position: 'relative', overflow: 'hidden', background: '#010409', cursor: (pickingEmpty || pickingLock || pickingColor || pickingGenerator) ? 'copy' : inspectorMode ? 'pointer' : lassoActive ? 'crosshair' : 'crosshair' }}
+      style={{ flex: 1, position: 'relative', overflow: 'hidden', background: '#010409', cursor: pasteMode ? 'move' : (pickingEmpty || pickingLock || pickingColor || pickingGenerator) ? 'copy' : inspectorMode ? 'pointer' : 'crosshair' }}
     >
       <canvas
         ref={canvasRef}

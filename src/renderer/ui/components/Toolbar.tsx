@@ -76,24 +76,24 @@ export default function Toolbar({ onOpenMap, onSaveAll, onSaveDraft, onLoadDraft
       <div style={{ flex: 1 }} />
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-        <TopBarButton onClick={onOpenMap} disabled={loading}>
+        <TopBarButton onClick={onOpenMap} disabled={loading} title="Open a mod folder in this tab">
           <FolderOpenIcon size={14} />
           {loading ? 'Loading...' : 'Open Map'}
         </TopBarButton>
 
-        <TopBarButton onClick={onLoadDraft} disabled={loading} title="Load a saved draft">
+        <TopBarButton onClick={onLoadDraft} disabled={loading} title="Load a saved draft into this tab">
           <FolderOpenIcon size={14} />
           Load Draft
         </TopBarButton>
 
         <div style={{ width: 1, height: 16, background: theme.border.muted, margin: '0 4px' }} />
 
-        <TopBarButton onClick={onSaveAll} disabled={!mapLoaded} title="Save map image + mod files (Ctrl+S)">
+        <TopBarButton onClick={onSaveAll} disabled={!mapLoaded} title="Save map image + mod files for this tab (Ctrl+S)">
           <SaveIcon size={14} />
           Save
         </TopBarButton>
 
-        <TopBarButton onClick={onSaveDraft} disabled={!mapLoaded} title="Save draft (Ctrl+Shift+S)">
+        <TopBarButton onClick={onSaveDraft} disabled={!mapLoaded} title="Save draft for this tab (Ctrl+Shift+S)">
           <SaveIcon size={14} />
           Save Draft
         </TopBarButton>

@@ -108,14 +108,17 @@ export default function DraftListDialog({
         )}
 
         <div style={footerStyle}>
-          <button style={cancelBtnStyle} onClick={onCancel}>Cancel</button>
-          <button
-            style={selected ? loadBtnStyle : loadBtnDisabledStyle}
-            onClick={handleLoad}
-            disabled={!selected}
-          >
-            Load
-          </button>
+          <p style={footnoteStyle}>Draft will be loaded into the active tab.</p>
+          <div style={{ display: 'flex', gap: theme.space.md }}>
+            <button style={cancelBtnStyle} onClick={onCancel}>Cancel</button>
+            <button
+              style={selected ? loadBtnStyle : loadBtnDisabledStyle}
+              onClick={handleLoad}
+              disabled={!selected}
+            >
+              Load
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -220,9 +223,18 @@ const deleteBtnConfirmStyle: React.CSSProperties = {
   fontWeight: 600,
 };
 
+const footnoteStyle: React.CSSProperties = {
+  color: theme.text.muted,
+  fontSize: theme.font.sizeXs,
+  fontFamily: theme.font.family,
+  fontStyle: 'italic',
+  margin: 0,
+};
+
 const footerStyle: React.CSSProperties = {
   display: 'flex',
-  justifyContent: 'flex-end',
+  justifyContent: 'space-between',
+  alignItems: 'center',
   gap: theme.space.md,
   marginTop: theme.space.xl,
   borderTop: `1px solid ${theme.border.muted}`,

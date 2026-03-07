@@ -28,12 +28,15 @@ import UnsavedDraftDialog from './components/UnsavedDraftDialog';
 import LoadingOverlay from './components/LoadingOverlay';
 import ProvinceGenerator from './components/ProvinceGenerator';
 import SelectionActionBar from './components/SelectionActionBar';
+import PasteActionBar from './components/PasteActionBar';
+import Toast from './components/Toast';
 import SectorMapDrawer from './components/SectorMapDrawer';
 import IdDriftDialog from './components/IdDriftDialog';
 import { theme } from './theme';
 import type { ToolType, RGB, CreateProvinceRequest, PendingProvince } from '@shared/types';
 import { rgbToKey } from '@shared/types';
 import { PendingProvinceMap } from '@registry/pending-province-map';
+import type { CopyPasteManager } from '@tools/copy-paste-manager';
 
 // Hooks
 import { useViewportSettings } from './hooks/useViewportSettings';
@@ -47,9 +50,40 @@ import { useSaveReconciliation } from './hooks/useSaveReconciliation';
 import { useVoronoiGenerator } from './hooks/useVoronoiGenerator';
 import { useDraftSaveLoad } from './hooks/useDraftSaveLoad';
 import { useMapLoading } from './hooks/useMapLoading';
+import { useCopyPaste } from './hooks/useCopyPaste';
 
-export default function App() {
+interface AppProps {
+  tabId?: number;
+  isActive?: boolean;
+  onDirtyStateChange?: (dirty: boolean) => void;
+  onTabLabelChange?: (label: string) => void;
+  isMultiTab?: boolean;
+  /** Global copy-paste manager shared across tabs */
+  copyPasteManager?: CopyPasteManager;
+  /** Register a save callback so TabShell can trigger saves on this tab */
+  onRegisterSave?: (save: () => Promise<void>) => void;
+}
+
+export default function App({
+  tabId,
+  isActive = true,
+  onDirtyStateChange,
+  onTabLabelChange,
+  isMultiTab = false,
+  copyPasteManager,
+  onRegisterSave,
+}: AppProps = {}) {
   const [status, setStatus] = useState('No map loaded');
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  // Fallback copy-paste manager for single-tab mode
+  const fallbackCpmRef = useRef<CopyPasteManager | null>(null);
+  if (!copyPasteManager && !fallbackCpmRef.current) {
+    // Lazy import to avoid circular dependency at module level
+    const { CopyPasteManager: CPM } = require('@tools/copy-paste-manager');
+    fallbackCpmRef.current = new CPM();
+  }
+  const cpm = copyPasteManager ?? fallbackCpmRef.current!;
 
   // Core shared refs — created once, persisted across renders
   const engineRef = useRef<TileEngine | null>(null);
@@ -68,11 +102,13 @@ export default function App() {
 
   const lasso = useLassoSelection({
     engineRef, toolManagerRef, registryRef, undoManagerRef, activeColorRef,
+    copyPasteManager: cpm,
     setStatus,
     setDraftDirty: (dirty: boolean) => setDraftDirtyRef.current(dirty),
     setModDirty: (dirty: boolean) => setModDirtyRef.current(dirty),
     setModifiedProvinceIds: (v) => setModifiedProvinceIdsRef.current(v),
     onColorRemap: (oldColor, newColor) => handleColorRemapRef.current(oldColor, newColor),
+    onCopyComplete: () => setToastMessage('Copied! Use Ctrl+V to paste'),
   });
 
   const painting = usePaintingTools({
@@ -188,6 +224,16 @@ export default function App() {
     triggerForceUpdate: undoRedo.triggerForceUpdate,
   });
 
+  // Register save callback for TabShell's close guard
+  useEffect(() => {
+    if (onRegisterSave) {
+      onRegisterSave(async () => {
+        const name = draft.draftLoadedName || 'Auto-save';
+        await draft.performDraftSave(name);
+      });
+    }
+  }, [onRegisterSave, draft.draftLoadedName, draft.performDraftSave]);
+
   // Now that draft/inspector/pending exist, wire up the refs
   setDraftDirtyRef.current = draft.setDraftDirty;
   setModDirtyRef.current = inspector.setModDirty;
@@ -217,6 +263,16 @@ export default function App() {
   // Wire mapLoader.setLoading and setLoadingMessage to draft's refs
   setLoadingRef.current = mapLoader.setLoading;
   setLoadingMessageRef.current = mapLoader.setLoadingMessage;
+
+  const copyPaste = useCopyPaste({
+    engineRef, registryRef, undoManagerRef, pendingMapRef,
+    copyPasteManager: cpm,
+    setStatus,
+    setDraftDirty: (dirty: boolean) => setDraftDirtyRef.current(dirty),
+    setPendingCount: pending.setPendingCount,
+    setProvinceCount: pending.setProvinceCount,
+    triggerForceUpdate: undoRedo.triggerForceUpdate,
+  });
 
   /* ── Engine initialization ─────────────────────────────────── */
 
@@ -289,6 +345,9 @@ export default function App() {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // In multi-tab mode, only the active tab handles shortcuts
+      if (!isActive) return;
+
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
 
@@ -317,7 +376,27 @@ export default function App() {
         return;
       }
 
+      if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
+        if (lasso.selectedProvinces.size > 0) {
+          e.preventDefault();
+          lasso.handleCopy();
+        }
+        return;
+      }
+
+      if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
+        if (cpm.hasClipboard()) {
+          e.preventDefault();
+          copyPaste.handleStartPaste();
+        }
+        return;
+      }
+
       if (e.key === 'Escape') {
+        if (copyPaste.pasteMode) {
+          copyPaste.handlePasteCancel();
+          return;
+        }
         colorPicking.setPickingEmpty(false);
         colorPicking.setPickingLock(false);
         colorPicking.setPickingColor(false);
@@ -327,6 +406,17 @@ export default function App() {
           setStatus('Selection cleared');
         }
         return;
+      }
+
+      // Paste mode transform shortcuts
+      if (copyPaste.pasteMode && !e.ctrlKey && !e.metaKey) {
+        switch (e.key) {
+          case '[': copyPaste.handlePasteRotate(-15); return;
+          case ']': copyPaste.handlePasteRotate(15); return;
+          case '-': copyPaste.handlePasteScale(-0.1); return;
+          case '=': case '+': copyPaste.handlePasteScale(0.1); return;
+          case '0': copyPaste.handlePasteReset(); return;
+        }
       }
 
       if (!e.ctrlKey && !e.metaKey && !e.altKey) {
@@ -342,10 +432,11 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [painting.handleToolChange, undoRedo.handleUndo, undoRedo.handleRedo, save.handleSaveAll, draft.handleSaveDraft, viewport.handleToggleHoverInspect, voronoi.pickingGenerator, voronoi.handleGeneratorCancelPicking, lasso.selectedProvinces, lasso.clearSelection, colorPicking.setPickingEmpty, colorPicking.setPickingLock, colorPicking.setPickingColor]);
+  }, [isActive, painting.handleToolChange, undoRedo.handleUndo, undoRedo.handleRedo, save.handleSaveAll, draft.handleSaveDraft, viewport.handleToggleHoverInspect, voronoi.pickingGenerator, voronoi.handleGeneratorCancelPicking, lasso.selectedProvinces, lasso.clearSelection, lasso.handleCopy, colorPicking.setPickingEmpty, colorPicking.setPickingLock, colorPicking.setPickingColor, copyPaste.handleStartPaste, copyPaste.pasteMode, copyPaste.handlePasteCancel, copyPaste.handlePasteRotate, copyPaste.handlePasteScale, copyPaste.handlePasteReset]);
 
-  // Guard against closing with unsaved draft changes
+  // Guard against closing with unsaved draft changes (only in single-tab mode)
   useEffect(() => {
+    if (isMultiTab) return; // TabShell owns the close guard in multi-tab mode
     const cleanup = window.mapPainter.onCheckBeforeClose(() => {
       if (!draft.draftDirtyRef.current) {
         window.mapPainter.confirmClose();
@@ -355,7 +446,21 @@ export default function App() {
       }
     });
     return cleanup;
-  }, [draft.draftDirtyRef, draft.pendingNavigationRef, draft.guardUnsavedDraft]);
+  }, [isMultiTab, draft.draftDirtyRef, draft.pendingNavigationRef, draft.guardUnsavedDraft]);
+
+  // Notify TabShell of dirty state changes
+  useEffect(() => {
+    onDirtyStateChange?.(draft.draftDirty);
+  }, [draft.draftDirty, onDirtyStateChange]);
+
+  // Notify TabShell when a mod is loaded (for tab label)
+  useEffect(() => {
+    if (inspector.modLoaded && modPathRef.current && onTabLabelChange) {
+      const parts = modPathRef.current.replace(/\\/g, '/').split('/');
+      const modName = parts[parts.length - 1] || parts[parts.length - 2] || 'Map';
+      onTabLabelChange(modName);
+    }
+  }, [inspector.modLoaded, onTabLabelChange]);
 
   /* ── Derived values ────────────────────────────────────────── */
 
@@ -377,7 +482,7 @@ export default function App() {
   /* ── Render ────────────────────────────────────────────────── */
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', userSelect: 'none', background: theme.bg.base }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', userSelect: 'none', background: theme.bg.base }}>
       <Toolbar
         onOpenMap={mapLoader.handleOpenMap}
         onSaveAll={save.handleSaveAll}
@@ -389,36 +494,36 @@ export default function App() {
 
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         <VerticalToolBar
-          activeTool={painting.activeTool}
-          onToolChange={painting.handleToolChange}
-          onUndo={undoRedo.handleUndo}
-          onRedo={undoRedo.handleRedo}
-          canUndo={tm?.canUndo ?? false}
-          canRedo={tm?.canRedo ?? false}
-          brushRadius={painting.brushRadius}
-          onBrushRadiusChange={painting.handleBrushRadiusChange}
-          respectBorders={painting.respectBorders}
-          onToggleRespectBorders={painting.handleToggleRespectBorders}
-          pickingEmpty={colorPicking.pickingEmpty}
-          onDefineEmpty={colorPicking.handleDefineEmpty}
-          emptyColors={colorPicking.emptyColors}
-          onRemoveEmpty={colorPicking.handleRemoveEmpty}
-          pickingLock={colorPicking.pickingLock}
-          onTogglePickLock={colorPicking.handleTogglePickLock}
-          lockedColor={colorPicking.lockedColor}
-          onClearLock={colorPicking.handleClearLock}
-          pickingColor={colorPicking.pickingColor}
-          onTogglePickColor={colorPicking.handleTogglePickColor}
-          gridEnabled={viewport.gridEnabled}
-          onToggleGrid={viewport.handleToggleGrid}
-          hoverInspect={viewport.hoverInspect}
-          onToggleHoverInspect={viewport.handleToggleHoverInspect}
-          heightmapVisible={viewport.heightmapVisible}
-          heightmapAvailable={viewport.heightmapAvailable}
-          heightmapOpacity={viewport.heightmapOpacity}
-          onToggleHeightmap={viewport.handleToggleHeightmap}
-          onHeightmapOpacityChange={viewport.handleHeightmapOpacityChange}
-          mapLoaded={mapLoaded}
+            activeTool={painting.activeTool}
+            onToolChange={painting.handleToolChange}
+            onUndo={undoRedo.handleUndo}
+            onRedo={undoRedo.handleRedo}
+            canUndo={tm?.canUndo ?? false}
+            canRedo={tm?.canRedo ?? false}
+            brushRadius={painting.brushRadius}
+            onBrushRadiusChange={painting.handleBrushRadiusChange}
+            respectBorders={painting.respectBorders}
+            onToggleRespectBorders={painting.handleToggleRespectBorders}
+            pickingEmpty={colorPicking.pickingEmpty}
+            onDefineEmpty={colorPicking.handleDefineEmpty}
+            emptyColors={colorPicking.emptyColors}
+            onRemoveEmpty={colorPicking.handleRemoveEmpty}
+            pickingLock={colorPicking.pickingLock}
+            onTogglePickLock={colorPicking.handleTogglePickLock}
+            lockedColor={colorPicking.lockedColor}
+            onClearLock={colorPicking.handleClearLock}
+            pickingColor={colorPicking.pickingColor}
+            onTogglePickColor={colorPicking.handleTogglePickColor}
+            gridEnabled={viewport.gridEnabled}
+            onToggleGrid={viewport.handleToggleGrid}
+            hoverInspect={viewport.hoverInspect}
+            onToggleHoverInspect={viewport.handleToggleHoverInspect}
+            heightmapVisible={viewport.heightmapVisible}
+            heightmapAvailable={viewport.heightmapAvailable}
+            heightmapOpacity={viewport.heightmapOpacity}
+            onToggleHeightmap={viewport.handleToggleHeightmap}
+            onHeightmapOpacityChange={viewport.handleHeightmapOpacityChange}
+            mapLoaded={mapLoaded}
         />
 
         <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
@@ -442,14 +547,37 @@ export default function App() {
             lassoActive={painting.activeTool === 'lasso'}
             onLassoComplete={lasso.handleLassoComplete}
             onLassoShiftClick={lasso.handleLassoShiftClick}
+            pasteMode={copyPaste.pasteMode}
+            onPasteDrag={copyPaste.handlePasteDrag}
+            onPasteWheel={copyPaste.handlePasteWheel}
           />
 
           <SelectionActionBar
             selectedCount={lasso.selectedProvinces.size}
+            selectMode={lasso.selectMode}
+            onSelectModeChange={lasso.setSelectMode}
             onHarmonize={lasso.handleHarmonize}
+            onCopy={lasso.handleCopy}
             onClear={lasso.clearSelection}
             harmonizing={lasso.harmonizing}
+            copying={lasso.copying}
+            lassoActive={painting.activeTool === 'lasso'}
           />
+
+          {copyPaste.pasteMode && (
+            <PasteActionBar
+              onCancel={copyPaste.handlePasteCancel}
+              onAccept={copyPaste.handlePasteAccept}
+              pasting={copyPaste.pasting}
+              scale={copyPaste.pasteScale}
+              rotation={copyPaste.pasteRotation}
+              onScale={copyPaste.handlePasteScale}
+              onRotate={copyPaste.handlePasteRotate}
+              onReset={copyPaste.handlePasteReset}
+              adjustMode={copyPaste.pasteAdjustMode}
+              onAdjustModeChange={copyPaste.setPasteAdjustMode}
+            />
+          )}
 
           <SectorMapDrawer registryRef={registryRef} />
         </div>
@@ -686,6 +814,10 @@ export default function App() {
 
       {mapLoader.loadingMessage && (
         <LoadingOverlay message={mapLoader.loadingMessage} />
+      )}
+
+      {toastMessage && (
+        <Toast message={toastMessage} onDismiss={() => setToastMessage(null)} />
       )}
     </div>
   );
