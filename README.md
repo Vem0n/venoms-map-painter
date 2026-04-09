@@ -135,7 +135,7 @@ Requires **Node.js 18+** and a C/C++ toolchain for `sharp` native bindings:
 - **Linux**: `sudo apt install build-essential`
 
 ```bash
-git clone https://github.com/your-username/venoms-map-painter.git
+git clone https://github.com/Vem0n/venoms-map-painter.git
 cd venoms-map-painter
 npm install
 npm run dev          # development with hot reload
