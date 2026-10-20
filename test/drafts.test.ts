@@ -7,7 +7,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
-import { saveDraft, listDrafts, loadDraftMetadata, deleteDraft, _sanitizeName } from '../src/main/drafts';
+import { saveDraft, listDrafts, loadDraftMetadata, deleteDraft, loadDraftImage, _sanitizeName } from '../src/main/drafts';
+import { parseDefinitionCsv } from '../src/main/modfiles/definition-csv';
 import type { PendingProvince, PendingSaveOptions, RGB } from '../src/shared/types';
 
 let tmpDir: string;
@@ -93,7 +94,7 @@ describe('saveDraft', () => {
     const draftsDir = path.join(tmpDir, 'VMP-Drafts');
     const entries = await fs.readdir(draftsDir);
     expect(entries.length).toBe(1);
-    expect(entries[0]).toMatch(/^Test-Draft_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}$/);
+    expect(entries[0]).toMatch(/^Test-Draft_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_[A-Za-z0-9]+$/);
   });
 
   it('writes draft.json with correct metadata', async () => {
@@ -227,5 +228,78 @@ describe('deleteDraft', () => {
 
   it('does not throw for non-existent draft', async () => {
     await expect(deleteDraft(tmpDir, 'nonexistent-folder')).resolves.not.toThrow();
+  });
+});
+
+async function originalFiles(): Promise<Record<string, string>> {
+  const files: Record<string, string> = {};
+  for (const relative of await fs.readdir(tmpDir, { recursive: true })) {
+    if (relative.split(path.sep)[0] === 'VMP-Drafts') continue;
+    const file = path.join(tmpDir, relative);
+    if ((await fs.stat(file)).isFile()) files[relative] = (await fs.readFile(file)).toString('hex');
+  }
+  return files;
+}
+
+describe('draft isolation and snapshots', () => {
+  it('round-trips edited province data and its original mapping without touching mod files', async () => {
+    await fs.mkdir(path.join(tmpDir, 'map_data'));
+    await fs.mkdir(path.join(tmpDir, 'history/provinces'), { recursive: true });
+    const definitionPath = path.join(tmpDir, 'map_data/definition.csv');
+    await fs.writeFile(definitionPath, '0;0;0;0;x;x;\n1;255;0;0;Original;x;\n');
+    await fs.writeFile(path.join(tmpDir, 'map_data/provinces.png'), 'original map bytes');
+    await fs.writeFile(path.join(tmpDir, 'history/provinces/original.txt'), '# preserve me\n');
+    const baseline = await parseDefinitionCsv(definitionPath);
+    const provinces = [{ ...baseline[0], name: 'Draft name', culture: 'draft_culture', terrain: 'hills' }];
+    const before = await originalFiles();
+    await saveDraft(tmpDir, 'Snapshot', makeTestBuffer(), 2, 2, {
+      provinces, sourceDefinitions: baseline, modifiedProvinceIds: [1],
+      titleRenames: [{ oldKey: 'c_old', newKey: 'c_new' }],
+      pendingProvinces: testPending, pendingSaveOptions: testSaveOptions,
+      emptyColors: testEmptyColors, lockedColor: null,
+    });
+    const [draft] = await listDrafts(tmpDir);
+    const metadata = await loadDraftMetadata(tmpDir, draft.folderName);
+    expect(metadata.provinces).toEqual(provinces);
+    expect(metadata.modifiedProvinceIds).toEqual([1]);
+    expect(metadata.titleRenames).toEqual([{ oldKey: 'c_old', newKey: 'c_new' }]);
+    expect(metadata.sourceDefinitions).toEqual(baseline);
+    expect(await parseDefinitionCsv(path.join(tmpDir, 'VMP-Drafts', draft.folderName, 'definition.csv')))
+      .toEqual([{ id: 1, color: { r: 255, g: 0, b: 0 }, name: 'Draft name' }]);
+    expect(Array.from((await loadDraftImage(tmpDir, draft.folderName)).buffer)).toEqual(Array.from(makeTestBuffer()));
+    expect(await originalFiles()).toEqual(before);
+    // Later mod edits must not change how the draft's colors are identified.
+    await fs.writeFile(definitionPath, '0;0;0;0;x;x;\n1;0;255;0;Changed externally;x;\n');
+    expect((await loadDraftMetadata(tmpDir, draft.folderName)).provinces).toEqual(provinces);
+  });
+
+  it('keeps distinct versions for repeated saves of the same name', async () => {
+    const state = { pendingProvinces: [], pendingSaveOptions: testSaveOptions, emptyColors: [], lockedColor: null };
+    await saveDraft(tmpDir, 'Same name', makeTestBuffer(), 2, 2, state);
+    const second = makeTestBuffer();
+    second[0] = 17;
+    await saveDraft(tmpDir, 'Same name', second, 2, 2, state);
+    const drafts = await listDrafts(tmpDir);
+    expect(drafts).toHaveLength(2);
+    const firstPixels = await Promise.all(drafts.map(async d => (await loadDraftImage(tmpDir, d.folderName)).buffer[0]));
+    expect(firstPixels.sort((a, b) => a - b)).toEqual([17, 255]);
+  });
+
+  it('does not list an incomplete draft or leave partial files after a failed save', async () => {
+    await expect(saveDraft(tmpDir, 'Broken', new Uint8Array(1), 2, 2, {
+      pendingProvinces: [], pendingSaveOptions: testSaveOptions, emptyColors: [], lockedColor: null,
+    })).rejects.toThrow();
+    expect(await listDrafts(tmpDir)).toEqual([]);
+    expect(await fs.readdir(path.join(tmpDir, 'VMP-Drafts'))).toEqual([]);
+    expect(await originalFiles()).toEqual({});
+  });
+
+  it('preserves an unknown baseline when resaving a legacy draft', async () => {
+    await saveDraft(tmpDir, 'Legacy', makeTestBuffer(), 2, 2, {
+      provinces: [], sourceDefinitions: null,
+      pendingProvinces: [], pendingSaveOptions: testSaveOptions, emptyColors: [], lockedColor: null,
+    });
+    const [draft] = await listDrafts(tmpDir);
+    expect((await loadDraftMetadata(tmpDir, draft.folderName)).sourceDefinitions).toBeNull();
   });
 });

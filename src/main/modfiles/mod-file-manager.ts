@@ -9,6 +9,7 @@
  * /VMP-Backups/{operation}_{timestamp}/ so nothing is permanently lost.
  */
 
+import { removableTitleKeys } from '@shared/save-safety';
 import path from 'path';
 import fs from 'fs/promises';
 import { ProvinceData, ModData, LoadModResult, CreateProvinceRequest, LandedTitleNode, ReconcileRequest, PendingProvince, PendingSaveOptions } from '@shared/types';
@@ -409,6 +410,8 @@ export class ModFileManager {
 
     // Find and update the file on disk
     const titlesDir = path.join(this.modPath, 'common', 'landed_titles');
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 19);
+    await this.backupDirectory(titlesDir, path.join(this.modPath, 'VMP-Backups', `rename_${stamp}`));
     const updated = await renameTitleInFile(titlesDir, oldKey, newKey);
     if (!updated) return false;
 
@@ -434,6 +437,10 @@ export class ModFileManager {
    */
   async reconcile(data: ReconcileRequest): Promise<void> {
     const removedSet = new Set(data.removedIds);
+    const removable = removableTitleKeys(this.landedTitles, removedSet);
+    if (data.removedTitleKeys.some(key => !removable.has(key))) {
+      throw new Error('Cannot remove a parent title that still contains surviving provinces.');
+    }
     const removedTitleSet = new Set(data.removedTitleKeys);
 
     // 1. Create timestamped backup directory

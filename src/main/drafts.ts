@@ -1,14 +1,15 @@
 /**
  * Drafts — Save and load draft state to/from VMP-Drafts/.
  *
- * A draft captures the current map image + pending province state
+ * A draft captures the current map image, province data, staged renames and pending state
  * without writing to actual mod files. Non-destructive snapshot.
  */
 
 import fs from 'fs/promises';
 import path from 'path';
 import { loadPng, savePng } from './image-io';
-import type { DraftMetadata, DraftSummary, RGB, PendingProvince, PendingSaveOptions } from '@shared/types';
+import { parseDefinitionCsv, writeDefinitionCsv } from './modfiles/definition-csv';
+import type { ProvinceData, DraftSaveData, DraftMetadata, DraftSummary } from '@shared/types';
 
 const DRAFTS_DIR = 'VMP-Drafts';
 
@@ -32,7 +33,7 @@ function makeTimestamp(): string {
 }
 
 /**
- * Save a draft: writes provinces.png + draft.json to VMP-Drafts/{name}_{timestamp}/
+ * Save a draft: writes image, definitions and metadata only inside a unique VMP-Drafts subfolder
  */
 export async function saveDraft(
   modPath: string,
@@ -40,37 +41,42 @@ export async function saveDraft(
   rgbaBuffer: Uint8Array,
   width: number,
   height: number,
-  metadata: {
-    pendingProvinces: PendingProvince[];
-    pendingSaveOptions: PendingSaveOptions;
-    emptyColors: RGB[];
-    lockedColor: RGB | null;
-  },
+  metadata: DraftSaveData,
 ): Promise<void> {
   const stamp = makeTimestamp();
   const folderName = `${sanitizeName(name)}_${stamp}`;
-  const draftDir = path.join(modPath, DRAFTS_DIR, folderName);
-
-  await fs.mkdir(draftDir, { recursive: true });
-
-  // Save map image
-  await savePng(path.join(draftDir, 'provinces.png'), rgbaBuffer, width, height);
-
-  // Save metadata
-  const fullMetadata: DraftMetadata = {
-    name,
-    timestamp: new Date().toISOString(),
-    modPath,
-    mapWidth: width,
-    mapHeight: height,
-    ...metadata,
-  };
-
-  await fs.writeFile(
-    path.join(draftDir, 'draft.json'),
-    JSON.stringify(fullMetadata, null, 2),
-    'utf-8',
-  );
+  const draftsRoot = path.join(modPath, DRAFTS_DIR);
+  await fs.mkdir(draftsRoot, { recursive: true });
+  // Separate versions even when two saves happen within the same second.
+  const draftDir = await fs.mkdtemp(path.join(draftsRoot, `${folderName}_`));
+  try {
+    let diskDefinitions: ProvinceData[] = [];
+    if (!metadata.provinces || metadata.sourceDefinitions === undefined) {
+      try {
+        diskDefinitions = await parseDefinitionCsv(path.join(modPath, 'map_data', 'definition.csv'));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+    }
+    const provinces = metadata.provinces ?? diskDefinitions;
+    const fullMetadata: DraftMetadata = {
+      ...metadata,
+      name,
+      timestamp: new Date().toISOString(),
+      modPath,
+      mapWidth: width,
+      mapHeight: height,
+      provinces,
+      sourceDefinitions: metadata.sourceDefinitions === undefined ? diskDefinitions : metadata.sourceDefinitions,
+    };
+    await savePng(path.join(draftDir, 'provinces.png'), rgbaBuffer, width, height);
+    await writeDefinitionCsv(path.join(draftDir, 'definition.csv'), provinces);
+    // Publish metadata last; incomplete saves never appear in the draft picker.
+    await fs.writeFile(path.join(draftDir, 'draft.json'), JSON.stringify(fullMetadata, null, 2), 'utf-8');
+  } catch (error) {
+    await fs.rm(draftDir, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 /**

@@ -1,10 +1,17 @@
 /** Draft save/load: save draft dialog, load draft flow, unsaved changes guard */
 
+import { reportSaveFailure } from '../save-failure';
+import type { SaveFailureReport } from '@shared/types';
+import { renameTitleTree } from '@shared/save-safety';
 import { useState, useCallback, useRef } from 'react';
 import type { RGB, ProvinceData, LandedTitleNode, PendingSaveOptions, DraftSummary, DraftMetadata } from '@shared/types';
 import type { EngineRef, RegistryRef, ToolManagerRef, UndoManagerRef, PendingMapRef, ModPathRef } from './types';
 
 export interface UseDraftSaveLoadParams {
+  sourceDefinitionsRef: React.MutableRefObject<ProvinceData[] | null>;
+  modifiedProvinceIds: Set<number>;
+  titleRenames: Array<{ oldKey: string; newKey: string }>;
+  setTitleRenames: (renames: Array<{ oldKey: string; newKey: string }>) => void;
   engineRef: EngineRef;
   registryRef: RegistryRef;
   toolManagerRef: ToolManagerRef;
@@ -38,6 +45,7 @@ export interface UseDraftSaveLoadParams {
 }
 
 export function useDraftSaveLoad({
+  sourceDefinitionsRef, modifiedProvinceIds, titleRenames, setTitleRenames,
   engineRef, registryRef, toolManagerRef, undoManagerRef, pendingMapRef, modPathRef,
   setStatus, pendingSaveOptions, emptyColors, lockedColor, loading,
   setLoading, setLoadingMessage, setLandedTitles, setModLoaded, setModDirty, setModifiedProvinceIds,
@@ -46,12 +54,15 @@ export function useDraftSaveLoad({
   setHeightmapAvailable, setHeightmapVisible,
   onColorChange, triggerForceUpdate,
 }: UseDraftSaveLoadParams) {
+  const [saveFailure, setSaveFailure] = useState<SaveFailureReport | null>(null);
+  const clearSaveFailure = useCallback(() => setSaveFailure(null), []);
   const [showSaveDraftDialog, setShowSaveDraftDialog] = useState(false);
   const [showDraftListDialog, setShowDraftListDialog] = useState(false);
   const [showUnsavedDraftDialog, setShowUnsavedDraftDialog] = useState(false);
   const [draftList, setDraftList] = useState<DraftSummary[]>([]);
   const [draftDirty, setDraftDirty] = useState(false);
   const [draftLoadedName, setDraftLoadedName] = useState<string | null>(null);
+  const draftPickerPathRef = useRef<string | null>(null);
   const pendingNavigationRef = useRef<(() => void) | null>(null);
   const draftDirtyRef = useRef(draftDirty);
   draftDirtyRef.current = draftDirty;
@@ -59,19 +70,24 @@ export function useDraftSaveLoad({
   /** Quick-save draft with a given name */
   const performDraftSave = useCallback(async (name: string) => {
     const engine = engineRef.current;
-    if (!modPathRef.current || !engine || !engine.isLoaded()) return;
+    const modPath = modPathRef.current;
+    if (!modPath || !engine || !engine.isLoaded()) throw new Error('Nothing to save — load a map first');
 
     setStatus('Saving draft...');
     const rgbaBuffer = new Uint8Array(engine.stitchFullImage().buffer);
     const { width, height } = engine.getMapSize();
 
     await window.mapPainter.saveDraft(
-      modPathRef.current,
+      modPath,
       name,
       rgbaBuffer,
       width,
       height,
       {
+        provinces: registryRef.current.getAllProvinces(),
+        modifiedProvinceIds: Array.from(modifiedProvinceIds),
+        sourceDefinitions: sourceDefinitionsRef.current,
+        titleRenames,
         pendingProvinces: pendingMapRef.current.getAll(),
         pendingSaveOptions,
         emptyColors,
@@ -82,7 +98,7 @@ export function useDraftSaveLoad({
     setDraftDirty(false);
     setDraftLoadedName(name);
     setStatus(`Draft saved: "${name}"`);
-  }, [engineRef, modPathRef, pendingMapRef, pendingSaveOptions, emptyColors, lockedColor, setStatus]);
+  }, [engineRef, modPathRef, registryRef, sourceDefinitionsRef, modifiedProvinceIds, titleRenames, pendingMapRef, pendingSaveOptions, emptyColors, lockedColor, setStatus]);
 
   const handleSaveDraft = useCallback(() => {
     const engine = engineRef.current;
@@ -100,8 +116,9 @@ export function useDraftSaveLoad({
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       setStatus(`Draft save error: ${msg}`);
+      setSaveFailure(await reportSaveFailure(err, { operation: 'save-draft', target: modPathRef.current ?? undefined }));
     }
-  }, [performDraftSave, setStatus]);
+  }, [performDraftSave, modPathRef, setStatus]);
 
   const handleSaveDraftCancel = useCallback(() => {
     setShowSaveDraftDialog(false);
@@ -126,11 +143,14 @@ export function useDraftSaveLoad({
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       setStatus(`Draft save error: ${msg}`);
+      setSaveFailure(await reportSaveFailure(err, { operation: 'save-draft', target: modPathRef.current ?? undefined }));
+      pendingNavigationRef.current = null;
+      return;
     }
     const action = pendingNavigationRef.current;
     pendingNavigationRef.current = null;
     if (action) action();
-  }, [draftLoadedName, performDraftSave, setStatus]);
+  }, [draftLoadedName, performDraftSave, modPathRef, setStatus]);
 
   const handleUnsavedDiscard = useCallback(() => {
     setShowUnsavedDraftDialog(false);
@@ -193,8 +213,11 @@ export function useDraftSaveLoad({
       }
 
       // 4. Populate registry from mod data
-      registryRef.current.loadFromDefinitions(modResult.data.provinces);
-      setLandedTitles(modResult.data.landedTitles);
+      const provinces = metadata.provinces ?? modResult.data.provinces;
+      registryRef.current.loadFromDefinitions(provinces);
+      sourceDefinitionsRef.current = metadata.sourceDefinitions ? structuredClone(metadata.sourceDefinitions) : null;
+      setTitleRenames(metadata.titleRenames ?? []);
+      setLandedTitles(renameTitleTree(modResult.data.landedTitles, metadata.titleRenames ?? []));
       setModLoaded(true);
       modPathRef.current = modPath;
 
@@ -203,7 +226,7 @@ export function useDraftSaveLoad({
       pendingMap.clear();
       for (const entry of metadata.pendingProvinces) {
         pendingMap.add(entry);
-        registryRef.current.addProvince({
+        if (!registryRef.current.getProvinceByColor(entry.color)) registryRef.current.addProvince({
           id: entry.id,
           color: entry.color,
           name: entry.name,
@@ -246,8 +269,8 @@ export function useDraftSaveLoad({
 
       // 8. Clear undo history + dirty flags
       undoManagerRef.current.clear();
-      setModDirty(false);
-      setModifiedProvinceIds(new Set());
+      setModDirty((metadata.modifiedProvinceIds?.length ?? 0) > 0 || (metadata.titleRenames?.length ?? 0) > 0);
+      setModifiedProvinceIds(new Set(metadata.modifiedProvinceIds ?? []));
       setSelectedProvince(null);
       setDraftDirty(false);
       setDraftLoadedName(metadata.name);
@@ -255,7 +278,7 @@ export function useDraftSaveLoad({
       // 9. Fetch history files
       setLoadingMessage('Loading history files...');
       try {
-        const hFiles = await window.mapPainter.listHistoryFiles();
+        const hFiles = await window.mapPainter.listHistoryFiles(modPath);
         setHistoryFiles(hFiles);
       } catch {
         setHistoryFiles([]);
@@ -291,7 +314,7 @@ export function useDraftSaveLoad({
       setLoadingMessage(null);
     }
   }, [
-    engineRef, registryRef, toolManagerRef, undoManagerRef, pendingMapRef, modPathRef,
+    sourceDefinitionsRef, setTitleRenames, engineRef, registryRef, toolManagerRef, undoManagerRef, pendingMapRef, modPathRef,
     setStatus, setLoading, setLoadingMessage, setLandedTitles, setModLoaded, setModDirty, setModifiedProvinceIds,
     setSelectedProvince, setHistoryFiles, setPendingCount, setProvinceCount,
     setPendingSaveOptions, setEmptyColors, setLockedColor,
@@ -299,13 +322,13 @@ export function useDraftSaveLoad({
   ]);
 
   /** "Load Draft" button — pick mod dir, scan drafts, show picker */
-  const handleLoadDraftAction = useCallback(async () => {
+  const handleLoadDraftAction = useCallback(async (selectedModPath?: string) => {
     if (loading) return;
     setLoading(true);
     setStatus('Selecting mod directory for draft...');
 
     try {
-      const modPath = await window.mapPainter.selectDirectory();
+      const modPath = selectedModPath ?? await window.mapPainter.selectDirectory();
       if (!modPath) {
         setStatus('No directory selected');
         setLoading(false);
@@ -321,7 +344,7 @@ export function useDraftSaveLoad({
         return;
       }
 
-      modPathRef.current = modPath;
+      draftPickerPathRef.current = modPath;
       setDraftList(drafts);
       setShowDraftListDialog(true);
     } catch (err) {
@@ -337,15 +360,20 @@ export function useDraftSaveLoad({
     handleLoadDraftAction();
   }, [guardUnsavedDraft, handleLoadDraftAction]);
 
+  const handleLoadProjectDraft = useCallback((modPath: string) => {
+    const action = () => { void handleLoadDraftAction(modPath); };
+    if (guardUnsavedDraft(action)) action();
+  }, [guardUnsavedDraft, handleLoadDraftAction]);
+
   const handleDraftSelected = useCallback((folderName: string) => {
     setShowDraftListDialog(false);
     setDraftList([]);
-    const modPath = modPathRef.current;
+    const modPath = draftPickerPathRef.current;
     if (modPath) performDraftLoad(modPath, folderName);
   }, [modPathRef, performDraftLoad]);
 
   const handleDraftDelete = useCallback(async (folderName: string) => {
-    const modPath = modPathRef.current;
+    const modPath = draftPickerPathRef.current;
     if (!modPath) return;
 
     try {
@@ -361,15 +389,17 @@ export function useDraftSaveLoad({
   const handleDraftListCancel = useCallback(() => {
     setShowDraftListDialog(false);
     setDraftList([]);
+    draftPickerPathRef.current = null;
   }, []);
 
   return {
+    saveFailure, clearSaveFailure,
     showSaveDraftDialog, showDraftListDialog, showUnsavedDraftDialog,
     draftList, draftDirty, draftLoadedName,
     performDraftSave, handleSaveDraft, handleSaveDraftConfirm, handleSaveDraftCancel,
     guardUnsavedDraft,
     handleUnsavedSave, handleUnsavedDiscard, handleUnsavedCancel,
-    performDraftLoad, handleLoadDraftAction, handleLoadDraft,
+    performDraftLoad, handleLoadDraftAction, handleLoadDraft, handleLoadProjectDraft,
     handleDraftSelected, handleDraftDelete, handleDraftListCancel,
     setDraftDirty, setDraftLoadedName,
     draftDirtyRef, pendingNavigationRef,

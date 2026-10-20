@@ -6,8 +6,17 @@
  */
 
 import { contextBridge, ipcRenderer } from 'electron';
+import type { ProjectLibrary, SaveFailureContext, SaveFailureReport } from '@shared/types';
 
 const api = {
+  getProjectLibrary: (): Promise<ProjectLibrary> => ipcRenderer.invoke('get-project-library'),
+  addWorkshopFolder: (): Promise<ProjectLibrary | null> => ipcRenderer.invoke('add-workshop-folder'),
+  rescanProjectLibrary: (): Promise<ProjectLibrary> => ipcRenderer.invoke('rescan-project-library'),
+  removeWorkshopFolder: (folder: string): Promise<ProjectLibrary> => ipcRenderer.invoke('remove-workshop-folder', folder),
+
+  reportSaveFailure: (context: SaveFailureContext): Promise<SaveFailureReport> =>
+    ipcRenderer.invoke('report-save-failure', context),
+
   selectDirectory: (): Promise<string | null> =>
     ipcRenderer.invoke('select-directory'),
 
@@ -23,26 +32,26 @@ const api = {
   loadMod: (modPath: string): Promise<unknown> =>
     ipcRenderer.invoke('load-mod', modPath),
 
-  getHierarchy: (provinceId: number): Promise<unknown> =>
-    ipcRenderer.invoke('get-hierarchy', provinceId),
+  getHierarchy: (modPath: string, provinceId: number): Promise<unknown> =>
+    ipcRenderer.invoke('get-hierarchy', modPath, provinceId),
 
-  saveMod: (data: unknown): Promise<void> =>
-    ipcRenderer.invoke('save-mod', data),
+  saveMod: (modPath: string, data: unknown): Promise<void> =>
+    ipcRenderer.invoke('save-mod', modPath, data),
 
-  renameTitle: (oldKey: string, newKey: string): Promise<boolean> =>
-    ipcRenderer.invoke('rename-title', oldKey, newKey),
+  renameTitle: (modPath: string, oldKey: string, newKey: string): Promise<boolean> =>
+    ipcRenderer.invoke('rename-title', modPath, oldKey, newKey),
 
-  createProvince: (data: unknown): Promise<unknown> =>
-    ipcRenderer.invoke('create-province', data),
+  createProvince: (modPath: string, data: unknown): Promise<unknown> =>
+    ipcRenderer.invoke('create-province', modPath, data),
 
-  listHistoryFiles: (): Promise<string[]> =>
-    ipcRenderer.invoke('list-history-files'),
+  listHistoryFiles: (modPath: string): Promise<string[]> =>
+    ipcRenderer.invoke('list-history-files', modPath),
 
-  flushPendingProvinces: (data: unknown): Promise<void> =>
-    ipcRenderer.invoke('flush-pending-provinces', data),
+  flushPendingProvinces: (modPath: string, data: unknown): Promise<void> =>
+    ipcRenderer.invoke('flush-pending-provinces', modPath, data),
 
-  reconcileProvinces: (data: unknown): Promise<void> =>
-    ipcRenderer.invoke('reconcile-provinces', data),
+  reconcileProvinces: (modPath: string, data: unknown): Promise<void> =>
+    ipcRenderer.invoke('reconcile-provinces', modPath, data),
 
   saveDraft: (
     modPath: string,

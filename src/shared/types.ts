@@ -197,8 +197,55 @@ export interface PendingSaveOptions {
   terrainEntries: boolean;
 }
 
+/** A map-bearing Workshop item discovered without loading its image. */
+export interface WorkshopProject {
+  modPath: string;
+  workshopRoot: string;
+  workshopId: string;
+  name: string;
+  available: boolean;
+}
+
+/** Master library metadata, stored only in app user data. */
+export interface ProjectLibrary {
+  version: 1;
+  workshopFolders: string[];
+  projects: WorkshopProject[];
+  lastScannedAt: string | null;
+  warnings: string[];
+}
+
+/** Diagnostics for a failed save; no image buffers or mod-file contents are logged. */
+export interface SaveFailureContext {
+  operation: string;
+  message: string;
+  stack?: string;
+  target?: string;
+}
+
+export interface SaveFailureReport {
+  operation: string;
+  message: string;
+  logPath: string | null;
+  logError?: string;
+}
+
+/** State stored only inside VMP-Drafts; optional snapshots support older drafts. */
+export interface DraftSaveData {
+  pendingProvinces: PendingProvince[];
+  pendingSaveOptions: PendingSaveOptions;
+  emptyColors: RGB[];
+  lockedColor: RGB | null;
+  /** Full in-memory province data, including unsaved metadata edits. */
+  provinces?: ProvinceData[];
+  modifiedProvinceIds?: number[];
+  /** Definitions loaded from disk before editing, for overwrite warnings. */
+  sourceDefinitions?: ProvinceData[] | null;
+  titleRenames?: Array<{ oldKey: string; newKey: string }>;
+}
+
 /** Metadata for a saved draft (stored as draft.json in VMP-Drafts/) */
-export interface DraftMetadata {
+export interface DraftMetadata extends DraftSaveData {
   /** User-provided name */
   name: string;
   /** ISO 8601 timestamp */
@@ -209,14 +256,6 @@ export interface DraftMetadata {
   mapWidth: number;
   /** Map height in pixels */
   mapHeight: number;
-  /** Pending provinces at time of draft save */
-  pendingProvinces: PendingProvince[];
-  /** Save options state at time of draft save */
-  pendingSaveOptions: PendingSaveOptions;
-  /** User-defined empty colors */
-  emptyColors: RGB[];
-  /** Active province lock color, or null */
-  lockedColor: RGB | null;
 }
 
 /** Summary info for draft list display */

@@ -1,0 +1,129 @@
+name: Build and release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }} x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows
+            runner: windows-2022
+            arguments: --win nsis portable --x64
+            archive: release/win-unpacked/resources/app.asar
+          - platform: linux
+            runner: ubuntu-24.04
+            arguments: --linux AppImage deb rpm --x64
+            archive: release/linux-unpacked/resources/app.asar
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - name: Validate release version and changelog
+        run: node scripts/release.cjs metadata
+      - name: Use the reviewed npm version
+        run: |
+          npm install --global npm@12.2.0 --ignore-scripts --prefix "$RUNNER_TEMP/vmp-npm"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            echo "$RUNNER_TEMP/vmp-npm" >> "$GITHUB_PATH"
+          else
+            echo "$RUNNER_TEMP/vmp-npm/bin" >> "$GITHUB_PATH"
+          fi
+      - name: Install the reviewed lockfile
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Test
+        run: npm test
+      - name: Install Linux packaging and display tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y rpm binutils xz-utils xvfb xauth libcrypt1 libgtk-3-0t64 libnss3 libasound2t64 libgbm1 libgl1-mesa-dri libegl1 libx11-xcb1 libxkbcommon0 libcups2t64
+      - name: Package without publishing
+        run: npm run package -- ${{ matrix.arguments }} --publish never
+      - name: Check packaged Windows application
+        if: runner.os == 'Windows'
+        run: npm run test:electron -- ./${{ matrix.archive }}
+        env:
+          VMP_SMOKE_SOFTWARE_GPU: '1'
+      - name: Check packaged Linux application
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run test:electron -- ./${{ matrix.archive }}
+        env:
+          VMP_SMOKE_SOFTWARE_GPU: '1'
+          VMP_SMOKE_NO_SANDBOX: '1' # Ephemeral CI runner; not used in the shipped app.
+      - name: Stage release files
+        run: node scripts/release.cjs stage ${{ matrix.platform }}
+      - name: Bundle Windows installer and portable
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = (Get-Content release/metadata.json | ConvertFrom-Json).version
+          Compress-Archive -Path release/windows-bundle/* -DestinationPath "release/upload/venoms-map-painter-$version-windows-x64.zip" -Force
+      - name: Hash platform artifacts
+        run: node scripts/release.cjs checksums ${{ matrix.platform }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: ${{ matrix.platform }}-x64
+          path: release/upload/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  release:
+    name: Scan Windows files and create draft release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - name: Validate tagged source
+        run: node scripts/release.cjs metadata
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: '*-x64'
+          path: release/assets
+          merge-multiple: true
+      - name: Upload Windows EXEs to VirusTotal and wait for reports
+        run: node scripts/virustotal.cjs
+        env:
+          VIRUSTOTAL_API_KEY: ${{ secrets.VIRUSTOTAL_API_KEY }}
+      - name: Generate release notes and SHA-256 manifest
+        run: node scripts/release.cjs notes
+      - name: Create or refresh the workflow's draft release
+        run: node scripts/release.cjs publish
+        env:
+          GH_TOKEN: ${{ github.token }}

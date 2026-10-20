@@ -10,7 +10,7 @@ import type { ToolType, RGB } from '@shared/types';
 import { theme } from '../theme';
 import {
   FloodFillIcon, BrushIcon, EraserIcon, EyedropperIcon, LassoIcon,
-  BordersIcon, CircleIcon, LockIcon, LockOpenIcon, GridIcon, InspectIcon,
+  BordersIcon, EmptyColorIcon, LockIcon, LockOpenIcon, GridIcon, InspectIcon,
   HeightmapIcon, UndoIcon, RedoIcon, XIcon,
 } from './icons';
 
@@ -83,6 +83,8 @@ function ToolButton({ icon, label, shortcut, active, toggled, disabled, onClick 
       onMouseLeave={handleLeave}
     >
       <button
+        type="button"
+        aria-label={label}
         onClick={onClick}
         disabled={disabled}
         style={{
@@ -474,7 +476,7 @@ export default function VerticalToolBar({
         disabled={!mapLoaded}
       />
       <ToolButton
-        icon={<CircleIcon size={16} />}
+        icon={<EmptyColorIcon size={16} />}
         label={pickingEmpty ? 'Click map...' : 'Define Empty'}
         toggled={pickingEmpty}
         onClick={onDefineEmpty}

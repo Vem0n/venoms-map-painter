@@ -1,33 +1,57 @@
 # Dependencies
 node_modules/
 
-# Build output
-dist/
-release/
+# Generated application bundles and release artifacts
+/dist/
+/release/
+/out/
 
-# Backups
+# Local tool caches and incremental compilation
+.cache/
+.npm/
+.vite/
+.vitest/
+.eslintcache
+*.tsbuildinfo
+
+# Test reports and coverage
+coverage/
+.nyc_output/
+
+# Map editing data (including mods opened inside this checkout)
+VMP-Drafts/
+VMP-Backups/
+
+# Temporary files and editor backups
 *.bak
+*.tmp
+*.temp
+*~
 
-# OS
+# OS metadata
 .DS_Store
+._*
 Thumbs.db
+Desktop.ini
 
 # Logs
 *.log
 npm-debug.log*
 
-# Environment
+# Local environment settings; keep shareable examples
 .env
 .env.*
+!.env.example
+!.env.*.example
 
-# IDE
+# Local IDE/editor settings
 .vscode/
 .idea/
+.history/
+*.code-workspace
 *.swp
 *.swo
 
-# Electron
-out/
-
-# Testing
-coverage/
+# Local Claude settings and temporary worktrees; keep shared guidance
+/.claude/settings.local.json
+/.claude/worktrees/

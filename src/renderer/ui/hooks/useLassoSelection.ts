@@ -5,6 +5,7 @@ import type { LassoPoint } from '@tools/lasso-select';
 import { collectLassoColors, collectLassoPixels, collectProvincePixels, getColorAtPoint } from '@tools/lasso-select';
 import { writeSelectionOverlay, writePolygonOverlay, clearSelectionOverlay } from '@tools/selection-overlay';
 import { rgbToKey, keyToRgb } from '@shared/types';
+import { rgbToHsl } from '@shared/colors';
 import type { RGB, UndoAction } from '@shared/types';
 import type { EngineRef, ToolManagerRef, RegistryRef, UndoManagerRef } from './types';
 import type { SelectMode, CopyPasteManager } from '@tools/copy-paste-manager';
@@ -14,8 +15,6 @@ export interface UseLassoSelectionParams {
   toolManagerRef: ToolManagerRef;
   registryRef: RegistryRef;
   undoManagerRef: UndoManagerRef;
-  /** Ref to the current brush/paint color — used as palette base for harmonize. */
-  activeColorRef: React.RefObject<RGB>;
   /** Global copy-paste manager (owned by TabShell) */
   copyPasteManager: CopyPasteManager;
   setStatus: (msg: string) => void;
@@ -28,27 +27,22 @@ export interface UseLassoSelectionParams {
   onCopyComplete: () => void;
 }
 
-/** Convert RGB to HSL hue (0-1). Returns 0 for achromatic colors. */
-function rgbToHue(c: RGB): number {
-  const r = c.r / 255, g = c.g / 255, b = c.b / 255;
-  const max = Math.max(r, g, b), min = Math.min(r, g, b);
-  if (max === min) return 0;
-  const d = max - min;
-  let h: number;
-  if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
-  else if (max === g) h = ((b - r) / d + 2) / 6;
-  else h = ((r - g) / d + 4) / 6;
-  return h;
-}
-
 export function useLassoSelection({
-  engineRef, toolManagerRef, registryRef, undoManagerRef, activeColorRef,
+  engineRef, toolManagerRef, registryRef, undoManagerRef,
   copyPasteManager,
   setStatus, setDraftDirty, setModDirty, setModifiedProvinceIds,
   onColorRemap, onCopyComplete,
 }: UseLassoSelectionParams) {
   const [selectedProvinces, setSelectedProvinces] = useState<Set<string>>(new Set());
   const [harmonizing, setHarmonizing] = useState(false);
+  const firstSelectedKey: string | undefined = selectedProvinces.values().next().value;
+  const [harmonizeOverride, setHarmonizeOverride] = useState<{ seed: string; color: RGB } | null>(null);
+  const harmonizeColor = firstSelectedKey
+    ? (harmonizeOverride?.seed === firstSelectedKey ? harmonizeOverride.color : keyToRgb(firstSelectedKey))
+    : null;
+  const setHarmonizeColor = useCallback((color: RGB) => {
+    if (firstSelectedKey) setHarmonizeOverride({ seed: firstSelectedKey, color });
+  }, [firstSelectedKey]);
   const [selectMode, setSelectMode] = useState<SelectMode>('province');
   const [copying, setCopying] = useState(false);
 
@@ -66,6 +60,7 @@ export function useLassoSelection({
     const engine = engineRef.current;
     if (engine) clearSelectionOverlay(engine);
     setSelectedProvinces(new Set());
+    setHarmonizeOverride(null);
     lastPolygonRef.current = null;
   }, [engineRef]);
 
@@ -86,6 +81,7 @@ export function useLassoSelection({
         return;
       }
 
+      setHarmonizeOverride(null);
       setSelectedProvinces(result.colors);
       lastPolygonRef.current = null;
       const tileSubset = getTileSubset(result.colors);
@@ -98,6 +94,7 @@ export function useLassoSelection({
 
       // Also collect colors for the count display (but overlay covers the polygon area)
       const result = await collectLassoColors(engine, polygon, emptySet);
+      setHarmonizeOverride(null);
       setSelectedProvinces(result.colors);
 
       await writePolygonOverlay(engine, polygon, emptySet);
@@ -118,6 +115,7 @@ export function useLassoSelection({
     const colorKey = getColorAtPoint(engine, gx, gy, emptySet);
     if (!colorKey) return;
 
+    setHarmonizeOverride(prev => prev?.seed === colorKey ? null : prev);
     setSelectedProvinces(prev => {
       const next = new Set(prev);
       if (next.has(colorKey)) {
@@ -219,11 +217,9 @@ export function useLassoSelection({
         return;
       }
 
-      // Use the current brush color's hue as palette base
-      const baseHue = rgbToHue(activeColorRef.current ?? provinces[0].oldColor);
-
-      // Generate new palette
-      const newColors = registry.generatePalette(baseHue, provinces.length);
+      // Harmonize has its own seed; painting color never influences the palette.
+      const { h, s } = rgbToHsl(harmonizeColor ?? provinces[0].oldColor);
+      const newColors = registry.generatePalette(h, provinces.length, s);
       if (newColors.length < provinces.length) {
         setStatus(`Could only generate ${newColors.length}/${provinces.length} unique colors`);
         setHarmonizing(false);
@@ -287,6 +283,7 @@ export function useLassoSelection({
       // 7. Clear selection overlay (colors changed, old overlay is stale)
       clearSelectionOverlay(engine);
       setSelectedProvinces(new Set());
+      setHarmonizeOverride(null);
 
       setStatus(`Harmonized ${provinces.length} province(s) — ${totalPixels.toLocaleString()} pixels`);
     } catch (err) {
@@ -295,10 +292,10 @@ export function useLassoSelection({
     } finally {
       setHarmonizing(false);
     }
-  }, [engineRef, registryRef, undoManagerRef, selectedProvinces, setStatus, setDraftDirty, setModDirty, setModifiedProvinceIds, getTileSubset, onColorRemap]);
+  }, [engineRef, registryRef, undoManagerRef, selectedProvinces, harmonizeColor, setStatus, setDraftDirty, setModDirty, setModifiedProvinceIds, getTileSubset, onColorRemap]);
 
   return {
-    selectedProvinces, harmonizing, selectMode, copying,
+    selectedProvinces, harmonizing, harmonizeColor, setHarmonizeColor, selectMode, copying,
     setSelectMode,
     clearSelection,
     handleLassoComplete,

@@ -3,7 +3,7 @@
  *
  * Displays the pending province list with color swatches, IDs, and names.
  * Delete erases pixels from the map and reconciles IDs immediately.
- * Saving happens only via the global Ctrl+S save.
+ * Saving happens only via the global Ctrl+Shift+S save.
  */
 
 import { theme, sectionHeading } from '../theme';
@@ -92,9 +92,9 @@ export default function PendingProvinces({
             })}
           </div>
 
-          {/* Save options — controls what gets written on Ctrl+S */}
+          {/* Save options — controls what gets written on Ctrl+Shift+S */}
           <div style={saveOptionsContainerStyle}>
-            <div style={saveOptionsHeaderStyle}>On Save (Ctrl+S)</div>
+            <div style={saveOptionsHeaderStyle}>On Save (Ctrl+Shift+S)</div>
             <label style={checkboxRowStyle}>
               <input type="checkbox" checked disabled style={checkboxStyle} />
               <span style={checkboxLabelStyle}>definition.csv entries</span>

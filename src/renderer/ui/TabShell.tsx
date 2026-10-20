@@ -8,6 +8,8 @@
 
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import App from './App';
+import { reportSaveFailure } from './save-failure';
+import type { SaveFailureReport } from '@shared/types';
 import { theme } from './theme';
 import { CopyPasteManager } from '@tools/copy-paste-manager';
 import UnsavedTabsDialog from './components/UnsavedTabsDialog';
@@ -20,6 +22,8 @@ interface TabInfo {
   label: string;
   dirty: boolean;
 }
+
+type CloseRequest = { kind: 'tab'; tabId: number } | { kind: 'window' };
 
 let nextTabId = 1;
 
@@ -43,8 +47,15 @@ export default function TabShell() {
   // Per-tab save callbacks registered by each App instance
   const saveCallbacks = useRef<Map<number, () => Promise<void>>>(new Map());
 
-  // Unsaved tabs dialog state
-  const [showUnsavedTabsDialog, setShowUnsavedTabsDialog] = useState(false);
+  // One guard owns tab and window closure, including single-tab windows.
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
+  const pendingCloseRef = useRef<CloseRequest | null>(null);
+  const savingCloseRef = useRef(false);
+  const tabBarRef = useRef<HTMLDivElement>(null);
+  const tabContentRef = useRef<HTMLDivElement>(null);
+  const [closeRequest, setCloseRequest] = useState<CloseRequest | null>(null);
+  const [closeError, setCloseError] = useState<SaveFailureReport | null>(null);
   const [unsavedTabsSaving, setUnsavedTabsSaving] = useState(false);
   const [dirtyTabEntries, setDirtyTabEntries] = useState<DirtyTabEntry[]>([]);
 
@@ -93,81 +104,106 @@ export default function TabShell() {
   }, []);
 
   const handleAddTab = useCallback(() => {
-    if (tabs.length >= MAX_TABS) return;
+    if (pendingCloseRef.current || tabs.length >= MAX_TABS) return;
     const tab = createTab();
     setTabs(prev => [...prev, tab]);
     setActiveTabId(tab.id);
   }, [tabs.length]);
 
-  const handleCloseTab = useCallback((tabId: number) => {
-    setTabs(prev => {
-      if (prev.length <= 1) return prev; // Never close the last tab
-      const idx = prev.findIndex(t => t.id === tabId);
-      const next = prev.filter(t => t.id !== tabId);
-      dirtyMapRef.current.delete(tabId);
-      dirtyCallbacks.current.delete(tabId);
-      labelCallbacks.current.delete(tabId);
-      saveCallbacks.current.delete(tabId);
-      saveRegCallbacks.current.delete(tabId);
-      // If closing the active tab, switch to the nearest neighbor
-      if (tabId === activeTabId) {
-        const newIdx = Math.min(idx, next.length - 1);
-        setActiveTabId(next[newIdx].id);
-      }
-      return next;
-    });
-  }, [activeTabId]);
+  /** Remove only the approved tab after saving or an explicit discard. */
+  const removeTab = useCallback((tabId: number) => {
+    const current = tabsRef.current;
+    if (current.length <= 1) return;
+    const index = current.findIndex(tab => tab.id === tabId);
+    if (index < 0) return;
+    const next = current.filter(tab => tab.id !== tabId);
+    dirtyMapRef.current.delete(tabId);
+    dirtyCallbacks.current.delete(tabId);
+    labelCallbacks.current.delete(tabId);
+    saveCallbacks.current.delete(tabId);
+    saveRegCallbacks.current.delete(tabId);
+    tabsRef.current = next;
+    setTabs(next);
+    setActiveTabId(active => active === tabId ? next[Math.min(index, next.length - 1)].id : active);
+  }, []);
 
-  // Close-window guard: show UnsavedTabsDialog when any tab is dirty
+  const requestClose = useCallback((request: CloseRequest) => {
+    // A second close request cannot replace a decision or bypass an in-flight save.
+    if (pendingCloseRef.current) return;
+    const current = tabsRef.current;
+    const targets = request.kind === 'window' ? current : current.filter(tab => tab.id === request.tabId);
+    if (request.kind === 'tab' && (current.length <= 1 || targets.length === 0)) return;
+    const dirty = targets.filter(tab => dirtyMapRef.current.get(tab.id))
+      .map(tab => ({ tabId: tab.id, label: tab.label }));
+    if (dirty.length === 0) {
+      if (request.kind === 'tab') removeTab(request.tabId);
+      else window.mapPainter.confirmClose();
+      return;
+    }
+    pendingCloseRef.current = request;
+    setDirtyTabEntries(dirty);
+    setCloseError(null);
+    setCloseRequest(request);
+  }, [removeTab]);
+
+  const handleCloseTab = useCallback((tabId: number) => requestClose({ kind: 'tab', tabId }), [requestClose]);
+
+  useEffect(() => window.mapPainter.onCheckBeforeClose(() => requestClose({ kind: 'window' })), [requestClose]);
+
+  // Prevent edits and tool shortcuts behind the modal while a close is pending.
   useEffect(() => {
-    const cleanup = window.mapPainter.onCheckBeforeClose(() => {
-      // Collect dirty tabs
-      const dirty: DirtyTabEntry[] = [];
-      for (const tab of tabs) {
-        if (dirtyMapRef.current.get(tab.id)) {
-          dirty.push({ tabId: tab.id, label: tab.label });
-        }
-      }
+    if (tabBarRef.current) tabBarRef.current.inert = closeRequest !== null;
+    if (tabContentRef.current) tabContentRef.current.inert = closeRequest !== null;
+  }, [closeRequest]);
 
-      if (dirty.length === 0) {
-        window.mapPainter.confirmClose();
-      } else {
-        setDirtyTabEntries(dirty);
-        setShowUnsavedTabsDialog(true);
-      }
-    });
-    return cleanup;
-  }, [tabs]);
+  const completeClose = useCallback(() => {
+    const request = pendingCloseRef.current;
+    if (!request) return;
+    pendingCloseRef.current = null;
+    setCloseRequest(null);
+    setCloseError(null);
+    if (request.kind === 'tab') removeTab(request.tabId);
+    else window.mapPainter.confirmClose();
+  }, [removeTab]);
 
   const handleUnsavedTabsSave = useCallback(async (tabIdsToSave: Set<number>) => {
+    if (!pendingCloseRef.current || savingCloseRef.current) return;
+    savingCloseRef.current = true;
     setUnsavedTabsSaving(true);
+    setCloseError(null);
+    let savingLabel = '';
     try {
-      // Save selected tabs sequentially
-      for (const tabId of tabIdsToSave) {
-        const saveFn = saveCallbacks.current.get(tabId);
-        if (saveFn) await saveFn();
+      for (const entry of dirtyTabEntries) {
+        if (!tabIdsToSave.has(entry.tabId) || !dirtyMapRef.current.get(entry.tabId)) continue;
+        savingLabel = entry.label;
+        const save = saveCallbacks.current.get(entry.tabId);
+        if (!save) throw new Error('The tab is not ready to save. Try again.');
+        await save();
       }
-    } catch (err) {
-      console.error('Save error during close:', err);
+      completeClose();
+    } catch (error) {
+      setCloseError(await reportSaveFailure(error, { operation: `save-draft-before-close (${savingLabel})` }));
+    } finally {
+      savingCloseRef.current = false;
+      setUnsavedTabsSaving(false);
     }
-    setUnsavedTabsSaving(false);
-    setShowUnsavedTabsDialog(false);
-    window.mapPainter.confirmClose();
-  }, []);
+  }, [dirtyTabEntries, completeClose]);
 
   const handleUnsavedTabsDiscard = useCallback(() => {
-    setShowUnsavedTabsDialog(false);
-    window.mapPainter.confirmClose();
-  }, []);
+    if (!savingCloseRef.current) completeClose();
+  }, [completeClose]);
 
   const handleUnsavedTabsCancel = useCallback(() => {
-    setShowUnsavedTabsDialog(false);
+    if (savingCloseRef.current) return;
+    pendingCloseRef.current = null;
+    setCloseRequest(null);
+    setCloseError(null);
   }, []);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
       {/* Tab bar */}
-      <div style={{
+      <div ref={tabBarRef} style={{
         height: 32,
         background: theme.bg.base,
         borderBottom: `1px solid ${theme.border.default}`,
@@ -183,6 +219,7 @@ export default function TabShell() {
           return (
             <div
               key={tab.id}
+              data-tab-id={tab.id}
               onClick={() => setActiveTabId(tab.id)}
               onMouseEnter={() => setHoveredTabId(tab.id)}
               onMouseLeave={() => { setHoveredTabId(null); setHoveredClose(null); }}
@@ -214,7 +251,10 @@ export default function TabShell() {
                 {tab.label}{tab.dirty ? ' •' : ''}
               </span>
               {tabs.length > 1 && (
-                <span
+                <button
+                  type="button"
+                  aria-label={`Close ${tab.label}`}
+                  title={`Close ${tab.label}`}
                   onClick={(e) => {
                     e.stopPropagation();
                     handleCloseTab(tab.id);
@@ -222,6 +262,9 @@ export default function TabShell() {
                   onMouseEnter={() => setHoveredClose(tab.id)}
                   onMouseLeave={() => setHoveredClose(null)}
                   style={{
+                    border: 'none',
+                    padding: 0,
+                    cursor: 'pointer',
                     fontSize: 14,
                     lineHeight: 1,
                     color: hoveredClose === tab.id ? theme.text.primary : theme.text.muted,
@@ -237,7 +280,7 @@ export default function TabShell() {
                   }}
                 >
                   ×
-                </span>
+                </button>
               )}
             </div>
           );
@@ -271,7 +314,7 @@ export default function TabShell() {
       </div>
 
       {/* Tab content — all mounted, only active visible */}
-      <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+      <div ref={tabContentRef} style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
         {tabs.map((tab) => (
           <div
             key={tab.id}
@@ -286,7 +329,6 @@ export default function TabShell() {
               isActive={tab.id === activeTabId}
               onDirtyStateChange={getDirtyCallback(tab.id)}
               onTabLabelChange={getLabelCallback(tab.id)}
-              isMultiTab={tabs.length > 1}
               copyPasteManager={copyPasteManagerRef.current}
               onRegisterSave={getSaveRegCallback(tab.id)}
             />
@@ -294,9 +336,11 @@ export default function TabShell() {
         ))}
       </div>
 
-      {showUnsavedTabsDialog && dirtyTabEntries.length > 0 && (
+      {closeRequest && dirtyTabEntries.length > 0 && (
         <UnsavedTabsDialog
           dirtyTabs={dirtyTabEntries}
+          closingTab={closeRequest.kind === 'tab'}
+          error={closeError}
           onSave={handleUnsavedTabsSave}
           onDiscard={handleUnsavedTabsDiscard}
           onCancel={handleUnsavedTabsCancel}

@@ -1,5 +1,39 @@
 # Changelog
 
+## v2.2.0 — Map Editing, Save Safety & Automated Releases
+
+- Fixed forgetting Workshop folders on Windows when filesystem-normalized paths differ in casing or use short-name aliases; offline folders can still be removed from the project list.
+
+- Added GitHub Actions builds for Windows installer/portable/ZIP and Linux AppImage/DEB/RPM. Version tags create draft releases for review with changelog sections, source commit SHA, SHA-256 checksums and automated VirusTotal scans of the exact Windows EXEs.
+
+- Replaced custom UI icons with a consistent, locally vendored Tabler Outline subset, including clearer sidebar tools and distinct project/draft file actions. Added sidebar button accessibility labels, upstream source mapping and the full MIT notice bundled with releases; no npm dependency was added.
+
+- Hierarchy visualization now keeps the chosen tier active across province clicks, automatically following the new county/duchy/kingdom/empire. Missing assignments clear stale outlines while retaining the tier; explicit clear actions and map/draft loading exit the mode.
+
+- Added clickable de jure county/duchy/kingdom/empire visualization in Inspect: glowing active tier dots, shader outlines around each title’s combined territory (including disconnected pieces), dimmed unrelated land and a clear action. Visualization is read-only and uses current province colors and explicit pending-parent assignments.
+
+- Gave Harmonize an independent color tile seeded from the first selected province, with a visual picker, RGB/hex entry and saturation strength. Palette generation respects that saturation and excludes both existing province colors and duplicates within the new palette.
+
+- Added a persistent Projects picker: scan game Workshop folders for map-bearing mods, read descriptor names, search and rescan projects, and open maps or project drafts without looking up Workshop IDs. Master metadata lives in app user data; scans never modify mod files.
+- Added persistent save-error logs and a recovery dialog with the actual log path, draft recovery actions and an explicit exit without saving. Log-writing failures show the original error and never block an explicit close.
+- Guarded dirty tab × closure with Cancel, Don't Save and Save Draft & Close. Failed saves keep tabs open with a visible retryable error; tab and window closure now share one guard in single- and multi-tab mode.
+- Moved all ID-drift checks before orphan removal so every required save confirmation precedes reconciliation and file writes; cancelling any save dialog leaves files and backups untouched.
+- Changed Ctrl+S to Save Draft and Ctrl+Shift+S to Save to Mod, with explicit labels and tooltips.
+- Drafts now preserve province definitions, metadata edits and staged title renames without modifying mod files; applying a draft confirms the target and warns about definition drift.
+- Fixed cancelling a draft picker redirecting later saves to the selected mod, and stopped close/navigation after a failed draft save.
+- Added an always-visible Keep All & Save orphan action; parent-title deletion follows the actual province selection and is validated before writing.
+
+- Fixed cross-mod writes in multi-tab mode: saves, reconciliation, province creation, title renames and metadata reads now explicitly target their mod directory. Missing or unloaded targets are rejected.
+
+- Fixed Voronoi province picking being intercepted by the lasso tool; explicit color/province picking now takes priority over lasso, including Shift-clicks.
+
+- Updated Electron to 44.7.0, electron-builder to 26.17.0, Vite to 7.3.7, and Vitest to 5.0.4; refreshed the transitive dependency lockfile.
+- Replaced sharp with dependency-free pngjs, keeping PNG processing in workers and avoiding Electron/Linux native-library crashes.
+- Pinned direct dependencies, documented Node 24 LTS/npm 12 requirements, and added a seven-day release cooldown with version-specific install-script approvals.
+- Overrode global-agent to 4.1.3 to remove an unpatched sprintf-js dependency from the packaging toolchain.
+- Added explicit Electron binary setup to development/preview commands and made packaging rebuild the app first.
+- Added real PNG worker checks for exact RGB values, 24-bit output and 16-bit heightmaps, plus an Electron UI/preload/IPC smoke test.
+
 ## v2.1.0-beta — Multi-Tab, Cross-Tab Copy-Paste & Close Guard
 
 ### New Features

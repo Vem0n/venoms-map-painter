@@ -5,6 +5,8 @@
 
 import React, { useState } from 'react';
 import { theme } from '../theme';
+import type { RGB } from '@shared/types';
+import HarmonizeColorPicker from './HarmonizeColorPicker';
 import { PaletteIcon, XIcon, CopyIcon } from './icons';
 import type { SelectMode } from '@tools/copy-paste-manager';
 
@@ -13,6 +15,8 @@ interface SelectionActionBarProps {
   selectMode: SelectMode;
   onSelectModeChange: (mode: SelectMode) => void;
   onHarmonize: () => void;
+  harmonizeColor: RGB | null;
+  onHarmonizeColorChange: (color: RGB) => void;
   onCopy: () => void;
   onClear: () => void;
   harmonizing: boolean;
@@ -100,7 +104,7 @@ function ModeButton({ label, active, onClick }: { label: string; active: boolean
 
 export default function SelectionActionBar({
   selectedCount, selectMode, onSelectModeChange,
-  onHarmonize, onCopy, onClear,
+  onHarmonize, harmonizeColor, onHarmonizeColorChange, onCopy, onClear,
   harmonizing, copying, lassoActive,
 }: SelectionActionBarProps) {
   // Show when lasso is active (for mode toggle) OR when there's a selection
@@ -150,15 +154,18 @@ export default function SelectionActionBar({
             <div style={{ width: 1, height: 20, background: theme.border.default, margin: '0 2px' }} />
 
             {selectMode === 'province' && (
-              <ActionButton
-                onClick={onHarmonize}
-                disabled={busy}
-                title="Generate a cohesive color palette for selected provinces"
-                accent
-              >
-                <PaletteIcon size={14} color="#fff" />
-                {harmonizing ? 'Harmonizing...' : 'Harmonize'}
-              </ActionButton>
+              <>
+                {harmonizeColor && <HarmonizeColorPicker color={harmonizeColor} onChange={onHarmonizeColorChange} disabled={busy} />}
+                <ActionButton
+                  onClick={onHarmonize}
+                  disabled={busy}
+                  title="Generate a cohesive color palette for selected provinces"
+                  accent
+                >
+                  <PaletteIcon size={14} color="#fff" />
+                  {harmonizing ? 'Harmonizing...' : 'Harmonize'}
+                </ActionButton>
+              </>
             )}
 
             <ActionButton

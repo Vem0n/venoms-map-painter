@@ -6,9 +6,10 @@
 
 import React, { useState } from 'react';
 import { theme } from '../theme';
-import { FolderOpenIcon, SaveIcon } from './icons';
+import { FolderOpenIcon, SaveIcon, ProjectsIcon, LoadDraftIcon, SaveDraftIcon } from './icons';
 
 interface ToolbarProps {
+  onProjects: () => void;
   onOpenMap: () => void;
   onSaveAll: () => void;
   onSaveDraft: () => void;
@@ -52,7 +53,7 @@ function TopBarButton({ onClick, disabled, children, title }: {
   );
 }
 
-export default function Toolbar({ onOpenMap, onSaveAll, onSaveDraft, onLoadDraft, mapLoaded, loading }: ToolbarProps) {
+export default function Toolbar({ onProjects, onOpenMap, onSaveAll, onSaveDraft, onLoadDraft, mapLoaded, loading }: ToolbarProps) {
   return (
     <div style={{
       height: 36,
@@ -76,25 +77,30 @@ export default function Toolbar({ onOpenMap, onSaveAll, onSaveDraft, onLoadDraft
       <div style={{ flex: 1 }} />
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+        <TopBarButton onClick={onProjects} disabled={loading} title="Browse saved Workshop projects by mod name">
+          <ProjectsIcon size={14} />
+          Projects
+        </TopBarButton>
+
         <TopBarButton onClick={onOpenMap} disabled={loading} title="Open a mod folder in this tab">
           <FolderOpenIcon size={14} />
           {loading ? 'Loading...' : 'Open Map'}
         </TopBarButton>
 
         <TopBarButton onClick={onLoadDraft} disabled={loading} title="Load a saved draft into this tab">
-          <FolderOpenIcon size={14} />
+          <LoadDraftIcon size={14} />
           Load Draft
         </TopBarButton>
 
         <div style={{ width: 1, height: 16, background: theme.border.muted, margin: '0 4px' }} />
 
-        <TopBarButton onClick={onSaveAll} disabled={!mapLoaded} title="Save map image + mod files for this tab (Ctrl+S)">
+        <TopBarButton onClick={onSaveAll} disabled={!mapLoaded || loading} title="Write map image and province data to the mod folder (Ctrl+Shift+S)">
           <SaveIcon size={14} />
-          Save
+          Save to Mod
         </TopBarButton>
 
-        <TopBarButton onClick={onSaveDraft} disabled={!mapLoaded} title="Save draft for this tab (Ctrl+Shift+S)">
-          <SaveIcon size={14} />
+        <TopBarButton onClick={onSaveDraft} disabled={!mapLoaded || loading} title="Save a draft in VMP-Drafts without changing mod files (Ctrl+S)">
+          <SaveDraftIcon size={14} />
           Save Draft
         </TopBarButton>
       </div>

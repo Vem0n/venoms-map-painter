@@ -1,22 +1,28 @@
 /** Province inspector state + mod file editing handlers */
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo, useEffect } from 'react';
 import type { ProvinceData, LandedTitleNode } from '@shared/types';
+import { renameTitleTree } from '@shared/save-safety';
+import type { TitleRename } from '@shared/save-safety';
+import { indexTitleHierarchy } from '@shared/title-hierarchy';
+import { hexToRgb } from '@shared/colors';
+import { theme } from '../theme';
 import { MAX_ZOOM } from '@shared/constants';
-import type { EngineRef, RegistryRef, ModPathRef } from './types';
+import type { EngineRef, RegistryRef, ModPathRef, PendingMapRef } from './types';
 import type { SidebarMode } from './types';
 
 export interface UseProvinceInspectorParams {
   engineRef: EngineRef;
   registryRef: RegistryRef;
   modPathRef: ModPathRef;
+  pendingMapRef: PendingMapRef;
   setStatus: (msg: string) => void;
   setDraftDirty: (dirty: boolean) => void;
   setZoomLevel: (zoom: number) => void;
 }
 
 export function useProvinceInspector({
-  engineRef, registryRef, modPathRef,
+  engineRef, registryRef, modPathRef, pendingMapRef,
   setStatus, setDraftDirty, setZoomLevel,
 }: UseProvinceInspectorParams) {
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>('painting');
@@ -25,7 +31,64 @@ export function useProvinceInspector({
   const [modDirty, setModDirty] = useState(false);
   const [modifiedProvinceIds, setModifiedProvinceIds] = useState<Set<number>>(new Set());
   const [landedTitles, setLandedTitles] = useState<LandedTitleNode[]>([]);
+  const [titleRenames, setTitleRenames] = useState<TitleRename[]>([]);
   const [historyFiles, setHistoryFiles] = useState<string[]>([]);
+  // Keep the tier selected while the inspected province (and its owning title) changes.
+  const [highlightedTier, setHighlightedTier] = useState<Exclude<LandedTitleNode['tier'], 'b'> | null>(null);
+  const registryRevision = registryRef.current.revision;
+  const pendingSignature = JSON.stringify(pendingMapRef.current.getAll().map(entry =>
+    [entry.id, entry.name, entry.request.parentTitle, entry.request.createCounty, entry.request.parentDuchy]));
+  const hierarchyIndex = useMemo(() => {
+    const renamed = (key: string | undefined) => titleRenames.reduce((value, rename) => value === rename.oldKey ? rename.newKey : value, key);
+    const pending = pendingMapRef.current.getAll().map(entry => ({ ...entry, request: {
+      ...entry.request, parentTitle: renamed(entry.request.parentTitle), parentDuchy: renamed(entry.request.parentDuchy),
+    } }));
+    return indexTitleHierarchy(landedTitles, registryRef.current.getAllProvinces(), pending);
+  }, [landedTitles, registryRevision, pendingSignature, titleRenames, registryRef, pendingMapRef]);
+  const activeTitle = highlightedTier && selectedProvince
+    ? hierarchyIndex.chains.get(selectedProvince.id)?.find(title => title.tier === highlightedTier)
+    : undefined;
+  const titleProvinceCount = activeTitle ? hierarchyIndex.members.get(activeTitle.key)?.size ?? 0 : 0;
+  const tierLabel = highlightedTier ? { c: 'County', d: 'Duchy', k: 'Kingdom', e: 'Empire' }[highlightedTier] : null;
+  const titleHighlightLabel = activeTitle?.key ?? (tierLabel ? `${tierLabel} view — no ${tierLabel.toLowerCase()} assigned` : '');
+
+  const clearTitleHighlight = useCallback(() => {
+    engineRef.current?.clearTitleHighlight();
+    setHighlightedTier(null);
+  }, [engineRef]);
+
+  useEffect(() => {
+    if (!modLoaded) clearTitleHighlight();
+  }, [modLoaded, clearTitleHighlight]);
+
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    if (!activeTitle) {
+      engine.clearTitleHighlight();
+      return;
+    }
+    const colors = Array.from(hierarchyIndex.members.get(activeTitle.key) ?? []).flatMap(id => {
+      const province = registryRef.current.getProvinceById(id);
+      return province ? [province.color] : [];
+    });
+    const tint = { b: theme.text.secondary, c: theme.accent.blue, d: theme.accent.purple, k: theme.accent.yellow, e: theme.accent.red }[activeTitle.tier] ?? theme.text.secondary;
+    engine.setTitleHighlight(colors, hexToRgb(tint)!);
+  }, [activeTitle, hierarchyIndex, engineRef, registryRef]);
+
+  useEffect(() => () => { engineRef.current?.clearTitleHighlight(); }, [engineRef]);
+
+  const handleTitleHighlight = useCallback((key: string) => {
+    const tier = hierarchyIndex.titles.get(key)?.tier;
+    if (!tier || tier === 'b') return;
+    setHighlightedTier(previous => previous === tier ? null : tier);
+  }, [hierarchyIndex]);
+
+  // Map/draft loading starts a fresh inspection session, even when loading the same mod.
+  const resetSelectedProvince = useCallback((province: ProvinceData | null) => {
+    clearTitleHighlight();
+    setSelectedProvince(province);
+  }, [clearTitleHighlight]);
 
   const handleProvinceClick = useCallback((gx: number, gy: number) => {
     const engine = engineRef.current;
@@ -50,46 +113,20 @@ export function useProvinceInspector({
   }, [registryRef, setDraftDirty]);
 
   const handleFetchHierarchy = useCallback(async (provinceId: number): Promise<LandedTitleNode[]> => {
-    try {
-      return await window.mapPainter.getHierarchy(provinceId);
-    } catch {
-      return [];
-    }
-  }, []);
+    return hierarchyIndex.chains.get(provinceId) ?? [];
+  }, [hierarchyIndex]);
 
-  const handleTitleRename = useCallback(async (oldKey: string, newKey: string) => {
-    try {
-      const success = await window.mapPainter.renameTitle(oldKey, newKey);
-      if (success) {
-        setModDirty(true);
-        setStatus(`Renamed title: ${oldKey} -> ${newKey}`);
-      } else {
-        setStatus(`Title not found: ${oldKey}`);
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setStatus(`Rename error: ${msg}`);
+  const handleTitleRename = useCallback((oldKey: string, newKey: string) => {
+    const rename = { oldKey, newKey };
+    setTitleRenames(prev => [...prev, rename]);
+    setLandedTitles(prev => renameTitleTree(prev, [rename]));
+    for (const province of registryRef.current.getAllProvinces()) {
+      if (province.titleKey === oldKey) province.titleKey = newKey;
     }
-  }, [setStatus]);
-
-  const handleSaveMod = useCallback(async () => {
-    if (!modPathRef.current) return;
-
-    try {
-      setStatus('Saving mod files...');
-      const provinces = registryRef.current.getAllProvinces();
-      await window.mapPainter.saveMod({
-        provinces,
-        modifiedProvinceIds: Array.from(modifiedProvinceIds),
-      });
-      setModDirty(false);
-      setModifiedProvinceIds(new Set());
-      setStatus('Mod files saved');
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setStatus(`Save error: ${msg}`);
-    }
-  }, [modPathRef, registryRef, modifiedProvinceIds, setStatus]);
+    setModDirty(true);
+    setDraftDirty(true);
+    setStatus(`Title rename staged: ${oldKey} → ${newKey}. Save Draft to keep it, or Save to Mod to apply it.`);
+  }, [registryRef, setDraftDirty, setStatus]);
 
   const handleJumpToProvince = useCallback(async (province: ProvinceData) => {
     const engine = engineRef.current;
@@ -109,10 +146,11 @@ export function useProvinceInspector({
 
   return {
     sidebarMode, selectedProvince, modLoaded, modDirty,
-    modifiedProvinceIds, landedTitles, historyFiles,
+    highlightedTitle: activeTitle?.key ?? null, highlightedTier, titleHighlightLabel, titleProvinceCount, handleTitleHighlight, clearTitleHighlight,
+    modifiedProvinceIds, landedTitles, historyFiles, titleRenames, setTitleRenames,
     handleProvinceClick, handleProvinceEdit, handleFetchHierarchy,
-    handleTitleRename, handleSaveMod, handleJumpToProvince,
-    setSidebarMode, setSelectedProvince, setModLoaded, setModDirty,
+    handleTitleRename, handleJumpToProvince,
+    setSidebarMode, setSelectedProvince: resetSelectedProvince, setModLoaded, setModDirty,
     setModifiedProvinceIds, setLandedTitles, setHistoryFiles,
   };
 }

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import { rgbToHsl } from '@shared/colors';
 import { ColorRegistry } from '@registry/color-registry';
 import type { ProvinceData, RGB } from '@shared/types';
 
@@ -201,6 +202,35 @@ describe('ColorRegistry', () => {
       // All should be unique
       const keys = new Set(palette.map(c => `${c.r},${c.g},${c.b}`));
       expect(keys.size).toBe(8);
+    });
+
+    it('keeps 60 harmonized provinces distinct from their originals and an unselected seed province', () => {
+      const originalColors = registry.generatePalette(0, 61, 0.8);
+      registry.loadFromDefinitions(originalColors.map((color, i) => makeProvince(i + 1, color.r, color.g, color.b, `P${i}`)));
+      const { h, s } = rgbToHsl(originalColors[0]);
+      const palette = registry.generatePalette(h, 60, s);
+      expect(palette).toHaveLength(60);
+      expect(new Set(palette.map(c => `${c.r},${c.g},${c.b}`)).size).toBe(60);
+      for (const color of palette) expect(registry.isColorUsed(color)).toBe(false);
+      // Palette creation is read-only; the seed and selected originals stay reserved.
+      for (const color of originalColors) expect(registry.isColorUsed(color)).toBe(true);
+    });
+
+    it('respects saturation strength without changing hue family', () => {
+      const soft = registry.generatePalette(0.6, 60, 0.2).map(rgbToHsl);
+      const strong = registry.generatePalette(0.6, 60, 0.9).map(rgbToHsl);
+      expect(soft).toHaveLength(60);
+      expect(strong).toHaveLength(60);
+      for (const color of [...soft, ...strong]) expect(Math.abs(color.h - 0.6)).toBeLessThan(0.025);
+      expect(Math.max(...soft.map(c => c.s))).toBeLessThan(0.22);
+      expect(strong.reduce((sum, c) => sum + c.s, 0)).toBeGreaterThan(soft.reduce((sum, c) => sum + c.s, 0) * 3);
+    });
+
+    it.each([0, 0.001, 0.01])('deduplicates near-gray candidates at saturation %s', saturation => {
+      const palette = registry.generatePalette(0.5, 60, saturation);
+      expect(palette).toHaveLength(60);
+      expect(new Set(palette.map(c => `${c.r},${c.g},${c.b}`)).size).toBe(60);
+      if (saturation === 0) for (const color of palette) expect(color.r === color.g && color.g === color.b).toBe(true);
     });
 
     it('skips colors already in use', () => {

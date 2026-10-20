@@ -17,6 +17,8 @@ import { SectorManager, TileBufferReader } from './sector-manager';
 const GOLDEN_RATIO_CONJUGATE = 0.6180339887498949;
 
 export class ColorRegistry {
+  /** Changes only when province identities/colors change, for cached map views. */
+  revision = 0;
   /** RGB key → ProvinceData */
   private colorToProvince: Map<string, ProvinceData>;
 
@@ -51,6 +53,7 @@ export class ColorRegistry {
    * Load provinces from parsed definition.csv data.
    */
   loadFromDefinitions(provinces: ProvinceData[]): void {
+    this.revision++;
     this.colorToProvince.clear();
     this.idToProvince.clear();
     this.usedColors.clear();
@@ -136,36 +139,44 @@ export class ColorRegistry {
    *
    * @param baseHue - Hue in [0, 1] range
    * @param count - Number of colors to generate
+   * @param baseSaturation - Optional saturation ceiling taken from the Harmonize seed
    * @returns Array of unique RGB colors in the same hue family
    */
-  generatePalette(baseHue: number, count: number): RGB[] {
+  generatePalette(baseHue: number, count: number, baseSaturation?: number): RGB[] {
+    if (count <= 0) return [];
     const result: RGB[] = [];
 
     // Generate candidates across a lightness/saturation grid
-    const satSteps = [0.9, 0.75, 0.6, 0.5, 0.85, 0.65];
+    const satSteps = baseSaturation === undefined
+      ? [0.9, 0.75, 0.6, 0.5, 0.85, 0.65]
+      : [1, 0.9, 0.8, 0.7, 0.6, 0.5].map(scale => Math.max(0, Math.min(1, baseSaturation)) * scale);
+    const reserved = new Set(this.usedColors);
     const lightSteps = [0.35, 0.42, 0.5, 0.58, 0.65, 0.3, 0.45, 0.55, 0.38, 0.48];
 
-    // Small hue jitter range (+/- 5 degrees ≈ 0.014) for subtle variation
+    // Small hue jitter range (up to +/- 7.2 degrees) for subtle variation
     const hueJitters = [0, 0.014, -0.014, 0.008, -0.008, 0.02, -0.02];
 
+    // A second pass supplies enough distinct shades even for gray/low-saturation seeds.
+    const lightnessGrids = [lightSteps, Array.from({ length: 224 }, (_, i) => (i + 16) / 255)];
     outer:
-    for (const hueJitter of hueJitters) {
-      for (const sat of satSteps) {
-        for (const light of lightSteps) {
-          const hue = ((baseHue + hueJitter) % 1.0 + 1.0) % 1.0;
-          const rgb = hslToRgb(hue, sat, light);
+    for (const grid of lightnessGrids) {
+      for (const hueJitter of hueJitters) {
+        for (const sat of satSteps) {
+          for (const light of grid) {
+            const hue = ((baseHue + hueJitter) % 1.0 + 1.0) % 1.0;
+            const rgb = hslToRgb(hue, sat, light);
 
-          // Skip black/near-black
-          if (rgb.r <= 1 && rgb.g <= 1 && rgb.b <= 1) continue;
-
-          if (!this.isColorUsed(rgb)) {
+            // Skip black/near-black, all existing colors, and earlier palette entries.
+            if (rgb.r <= 1 && rgb.g <= 1 && rgb.b <= 1) continue;
+            const key = rgbToKey(rgb);
+            if (reserved.has(key)) continue;
+            reserved.add(key);
             result.push(rgb);
             if (result.length >= count) break outer;
           }
         }
       }
     }
-
     return result;
   }
 
@@ -191,6 +202,7 @@ export class ColorRegistry {
     this.idToProvince.set(fullProvince.id, fullProvince);
     this.usedColors.add(key);
 
+    this.revision++;
     return fullProvince;
   }
 
@@ -199,6 +211,7 @@ export class ColorRegistry {
    * Use this when the main process has already generated the province.
    */
   addProvince(province: ProvinceData): void {
+    this.revision++;
     const key = rgbToKey(province.color);
     this.colorToProvince.set(key, province);
     this.idToProvince.set(province.id, province);
@@ -281,6 +294,7 @@ export class ColorRegistry {
     this.colorToProvince.delete(key);
     this.idToProvince.delete(id);
     this.usedColors.delete(key);
+    this.revision++;
     this.sectors.removeColor(key);
     this.sortedByName = this.sortedByName.filter(p => p.id !== id);
     return true;
@@ -305,6 +319,7 @@ export class ColorRegistry {
     province.color = { ...newColor };
     this.colorToProvince.set(newKey, province);
     this.usedColors.add(newKey);
+    this.revision++;
     this.sectors.remapColor(oldKey, newKey);
 
     return true;
@@ -315,6 +330,7 @@ export class ColorRegistry {
    * Mutates province objects in-place and rebuilds internal maps.
    */
   applyIdRemap(idMap: Map<number, number>): void {
+    this.revision++;
     const newIdMap = new Map<number, ProvinceData>();
     for (const [oldId, province] of this.idToProvince) {
       const newId = idMap.get(oldId);

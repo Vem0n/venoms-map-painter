@@ -29,11 +29,11 @@ Additionally the app is ***stateless***, you can generate files here, change the
 
 ## Quick Start
 
-1. Download from the [latest release](https://github.com/Vem0n/venoms-map-painter/releases) (Windows, macOS, Linux)
-2. Launch the app and click **Open Map**
-3. Select your CK3 mod root directory (the one containing `map_data/`)
+1. Download from the [latest release](https://github.com/Vem0n/venoms-map-painter/releases) (Windows and Linux)
+2. Launch the app and click **Open Map**, or **Projects** to browse Workshop mods
+3. Select your CK3 mod root directory (the one containing `map_data/`), or add the game’s Workshop content folder and pick a project by name
 4. Paint provinces, create new ones, edit existing data
-5. **Ctrl+S** to save everything
+5. **Ctrl+S** to save a draft, or **Ctrl+Shift+S** to write changes to the mod
 
 ---
 
@@ -58,7 +58,7 @@ All tools live in the vertical toolbar on the left. Hover any icon for a tooltip
 **Hover Inspect** (`H`) — Toggle a floating tooltip that follows your cursor across the map. Shows the province's color swatch, RGB values, ID, name, title, culture, and religion — regardless of which sidebar tab is active.
 
 **Lasso Select** (`L`) — Draw a freehand polygon to select provinces. Two modes available via the floating action bar:
-- **Province mode** — Selects whole provinces within the polygon. Harmonize Colors repaints them with a cohesive palette derived from your brush hue.
+- **Province mode** — Selects whole provinces within the polygon. Harmonize Colors repaints them with a cohesive palette using its own color tile, seeded from the first selected province. Click the tile for a visual picker, RGB/hex fields and a saturation slider; the paint brush color is independent. Existing province colors remain excluded.
 - **Normal mode** — Selects all non-empty pixels within the polygon regardless of province boundaries.
 
 Copy your selection, then Ctrl+V in any tab to paste. The paste preview can be repositioned by dragging, and scaled/rotated before committing.
@@ -67,9 +67,19 @@ Copy your selection, then Ctrl+V in any tab to paste. The paste preview can be r
 
 ---
 
+## Projects, Drafts & Saving
+
+Open **Projects**, click **Add Workshop Folder**, and choose the game’s Workshop content folder containing the numbered mod folders. VMP finds mods with a province map and definitions, reads their descriptor names, and keeps a searchable project list. **Rescan** refreshes it after installing or removing mods. The catalog is stored in the app’s user-data directory; scanning does not modify mods. You can open either a project map or one of its drafts from the list.
+
+**Save Draft** (`Ctrl+S`) keeps your map, province edits and staged title renames under that mod’s `VMP-Drafts/` folder without changing the mod’s game files. **Save to Mod** (`Ctrl+Shift+S`) explicitly applies your work to the mod, including when editing a loaded draft. Required drift and orphan confirmations finish before any save or backup is written; cancelling returns you to editing. In the orphan review, uncheck provinces you want to retain, or choose **Keep All & Save** to retain every detected orphan while saving your edits.
+
+If saving fails, the app shows an error-log path and offers draft recovery. Failed saves keep your work open; you can retry or explicitly discard and close. Mod backups remain under that mod’s `VMP-Backups/` folder.
+
+---
+
 ## Multi-Tab
 
-Open up to 4 maps simultaneously in separate tabs. Each tab is a fully isolated instance with its own engine, registry, undo history, and pending provinces. Only the active tab renders. Tab labels show the loaded mod folder name, and a dirty indicator (•) marks unsaved tabs. When closing the app with unsaved changes, a dialog lists all dirty tabs so you can choose which to save.
+Open up to 4 maps simultaneously in separate tabs. Each tab is a fully isolated instance with its own engine, registry, undo history, and pending provinces. Only the active tab renders. Tab labels show the loaded mod folder name, and a dirty indicator (•) marks unsaved tabs. Closing a dirty tab with × offers Cancel, Don't Save, or Save Draft & Close. When closing the app, a dialog lists all dirty tabs so you can choose which to save as drafts. Failed saves keep the tabs and window open, show the error, and allow retrying. Closing an inactive tab preserves the active tab.
 
 ---
 
@@ -95,7 +105,7 @@ Four tabs that stay mounted across switches so you never lose form state:
 
 **Paint** — Color picker with RGB inputs, unique color suggestion, and a realm palette generator that produces 12 related hues from a base color. Province search with instant results that jump the camera on click. Live hover inspector showing the province under your cursor.
 
-**Inspect** — Select a province by clicking the map. Edit all fields inline: name, culture, religion, holding type, terrain. Browse date-stamped history overrides. View the full de jure hierarchy with color-coded tiers (barony, county, duchy, kingdom, empire). Double-click any title key to rename it.
+**Inspect** — Select a province by clicking the map. Edit all fields inline: name, culture, religion, holding type, terrain. Browse date-stamped history overrides. View the full de jure hierarchy with color-coded tiers (barony, county, duchy, kingdom, empire). Click a county, duchy, kingdom or empire title to outline all its provinces on the map, including disconnected pieces; the active tier dot glows and unrelated land is dimmed. The chosen tier stays active as you click other provinces, switching to their county/duchy/kingdom/empire automatically. Provinces without that tier clear the old outline and show a no-assignment badge; the next assigned province resumes the view. Click the same title again, press Esc, or use the map highlight’s × to exit. Loading another map or draft resets the view. This shader view never changes map pixels or save data. Explicitly parented pending provinces are included; unassigned generated provinces do not inherit a county from reused IDs. Double-click any title key to rename it.
 
 **Create** — Province creation wizard. Pick between nesting under an existing county or creating a new one (with optional parent duchy). Fill in name, holding, culture, religion, terrain, then hit Create. IDs are sequential — the CK3 wiki warns that gaps cause crashes. An **Advanced** collapsible section lets you pick an existing `history/provinces/` file to append the new province entry to instead of creating a new file per province. Also doubles as an editor for pending provinces — click the edit button on any pending province and the Create tab pre-fills with its data.
 
@@ -112,8 +122,8 @@ Four tabs that stay mounted across switches so you never lose form state:
 | `E` | Eraser |
 | `L` | Lasso Select |
 | `H` | Hover Inspect |
-| `Ctrl+S` | Save (map image + all mod files) |
-| `Ctrl+Shift+S` | Save Draft |
+| `Ctrl+S` | Save Draft (does not modify mod files) |
+| `Ctrl+Shift+S` | Save to Mod (map image + mod files) |
 | `Ctrl+Z` | Undo |
 | `Ctrl+Y` / `Ctrl+Shift+Z` | Redo |
 | `Ctrl+V` | Paste from clipboard |
@@ -129,22 +139,24 @@ Four tabs that stay mounted across switches so you never lose form state:
 
 ## Build from Source
 
-Requires **Node.js 18+** and a C/C++ toolchain for `sharp` native bindings:
-- **Windows**: [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with "Desktop development with C++"
-- **macOS**: `xcode-select --install`
-- **Linux**: `sudo apt install build-essential`
+Requires **Node.js 24.21+ (24.x LTS)** and **npm 12.2+ (12.x)**. `.nvmrc` records the tested Node version; if you use nvm, run `nvm install` and `nvm use`.
+
+PNG processing uses `pngjs` in worker threads, so the app has no native image-processing bindings to compile.
 
 ```bash
 git clone https://github.com/Vem0n/venoms-map-painter.git
 cd venoms-map-painter
-npm install
-npm run dev          # development with hot reload
-npm test             # run unit tests
+npm ci               # install the reviewed lockfile
+npm run dev          # install Electron if needed, then start with hot reload
+npm test             # run unit tests and PNG compatibility checks
+npm run typecheck    # TypeScript checks
 npm run build        # production build
-npm run package      # package as installer/portable
+npm run package      # rebuild, then package as installer/portable
 ```
 
-Output goes to `release/`. Builds for Windows (NSIS + portable), macOS (DMG + ZIP), and Linux (AppImage + DEB).
+Output goes to `release/`. Automated releases build Windows (NSIS installer, portable EXE and a ZIP containing both) and Linux (AppImage, DEB and RPM), all x64. See [release setup and workflow](docs/RELEASING.md) for GitHub Actions, version tags, automatic VirusTotal scans, checksums and draft releases.
+
+Dependency updates use a seven-day release cooldown and version-specific install-script approvals. `dev` and `start` explicitly download Electron when needed; it no longer runs an automatic install hook. See [dependency maintenance](docs/DEPENDENCIES.md) for the short update procedure.
 
 ---
 
@@ -244,3 +256,27 @@ If you enjoy the project, feel free to
 ## License
 
 [MIT](LICENSE)
+
+UI icons use a vendored subset of [Tabler Outline](https://tabler.io/icons), copyright © 2020–2026 Paweł Kuna, under the MIT license. See [third-party notices](THIRD_PARTY_NOTICES.txt) and the [icon source mapping](docs/ICONS.md). The notice is bundled with packaged releases.
+
+### Workshop projects
+
+Open **Projects → Add Workshop Folder** and choose the game's Workshop content folder—the folder containing the numbered mod directories, usually under `steamapps/workshop/content/<game-id>/`.
+
+VMP discovers immediate child folders containing both `map_data/provinces.png` and `map_data/definition.csv`. It reads names from `descriptor.mod`, falling back to the folder name when no display name is available. The searchable, scrollable list shows names, Workshop IDs and paths. Select **Open Project** to load a map into the current tab, or **Load Project Draft** to select one of that mod's drafts. Existing unsaved-changes guards still apply.
+
+You can add multiple Workshop folders, **Rescan** after subscriptions or updates change, and **Remove Folder** to forget a library without deleting files. If a whole folder becomes unavailable, VMP remembers its projects and marks them unavailable until a successful rescan.
+
+The master list is saved as `projects.json` in Electron's app user-data directory. Discovery reads file presence and descriptors without decoding maps, parsing CSV rows, or creating backups. Drafts and backups continue to live under each mod's `VMP-Drafts/` and `VMP-Backups/` directories. **Open Map** remains available for opening a mod folder directly.
+
+### Draft and mod saves
+
+Ctrl+S opens **Save Draft**. Draft versions are stored under `VMP-Drafts/` with the painted image, province definitions, province metadata and staged title renames. Saving or loading a draft does not modify the mod's game files. Repeated saves create separate versions.
+
+**Save to Mod** (Ctrl+Shift+S) writes the map and province data to the original mod folder. Applying saved draft work shows the target folder and any definition changes made on disk before writing. Older drafts remain loadable, but their original definitions cannot be recovered; the confirmation explains that limitation.
+
+When orphaned provinces are found, **Keep All & Save** preserves their definitions while saving your edits. **Remove & Renumber** deletes only selected provinces; parent titles can be removed only when all their descendant provinces are selected.
+
+All required save confirmations complete before any file changes begin. ID-drift checks run before the final orphan review. Cancelling either review returns to editing without saving, deleting, renumbering, or creating backups.
+
+Save failures show **Saving has failed** with a copyable path to a diagnostic log. Logs normally live in the app user-data `logs/` directory, with a temporary-directory fallback; they do not write into the mod folder. A failed mod save offers **Save Draft Instead**. Failed close-time draft saves let you retry, go **Back to Editing**, or explicitly **Close Without Saving**. If logging also fails, the error details remain visible and the explicit exit still works.
