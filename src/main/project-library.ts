@@ -15,6 +15,25 @@ const absolute = (value: string): string => {
 // It needs no filesystem access, so an offline Workshop folder can be forgotten.
 const sameFolder = (left: string, right: string): boolean => path.relative(left, right) === '';
 
+/** Expand short names/junctions even when the folder's final components are missing. */
+async function removalTarget(folder: string): Promise<string> {
+  const requested = absolute(folder);
+  let ancestor = requested;
+  const missing: string[] = [];
+  while (true) {
+    try { return path.join(await fs.realpath(ancestor), ...missing); }
+    catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      // Forgetting an inaccessible/unmounted path still works using its saved name.
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') return requested;
+      const parent = path.dirname(ancestor);
+      if (parent === ancestor) return requested;
+      missing.unshift(path.basename(ancestor));
+      ancestor = parent;
+    }
+  }
+}
+
 /** Read descriptor display names without loading any map image or CSV contents. */
 async function projectAt(modPath: string, workshopRoot: string, warnings: string[]): Promise<WorkshopProject | null> {
   try {
@@ -134,7 +153,7 @@ export class ProjectLibraryStore {
 
   removeFolder(folder: string): Promise<ProjectLibrary> {
     return this.mutate(async library => {
-      const target = absolute(folder);
+      const target = await removalTarget(folder);
       return { ...library, workshopFolders: library.workshopFolders.filter(root => !sameFolder(root, target)),
         projects: library.projects.filter(project => !sameFolder(project.workshopRoot, target)), warnings: [] };
     });

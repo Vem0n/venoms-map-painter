@@ -90,7 +90,7 @@ describe('master project metadata', () => {
     await store.rescan();
     await store.removeFolder(workshop);
     expect(await snapshot(workshop)).toEqual(before);
-    expect((await store.get()).workshopFolders).toEqual([]);
+    expect((await store.get()).workshopFolders, `Requested folder: ${workshop}`).toEqual([]);
     expect((await store.get()).projects).toEqual([]);
   });
 
@@ -135,6 +135,20 @@ describe('master project metadata', () => {
     await store.addFolder(workshop);
     await fs.rename(workshop, path.join(root, 'offline'));
     const result = await store.removeFolder(workshop);
+    expect(result.workshopFolders).toEqual([]);
+    expect(result.projects).toEqual([]);
+  });
+
+  it('forgets an offline folder through an alternate parent path', async () => {
+    // A junction reproduces aliases such as Windows' RUNNER~1 temp directory
+    // without needing an actual Windows short-name filesystem on the test host.
+    const alias = path.join(root, 'SHORT~1');
+    await fs.symlink(root, alias, 'junction');
+    const requested = path.join(alias, 'workshop');
+    await mod(workshop, '100', 'name = "Aliased library"');
+    await store.addFolder(requested);
+    await fs.rename(workshop, path.join(root, 'offline'));
+    const result = await store.removeFolder(requested);
     expect(result.workshopFolders).toEqual([]);
     expect(result.projects).toEqual([]);
   });
