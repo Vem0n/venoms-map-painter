@@ -42,7 +42,14 @@ module.exports = async function smokeHierarchy(window, ipcMain, tempDir, writeCa
     const waitFor = async (predicate, message) => { const end = Date.now()+5000; while(!predicate()) { if(Date.now()>=end) throw new Error(message); await new Promise(resolve=>setTimeout(resolve,20)); } };
     const tick = () => new Promise(resolve=>setTimeout(resolve,30));
     const canvas = () => Array.from(document.querySelectorAll('canvas')).find(visible);
-    const point = (x,y) => { const r=canvas().getBoundingClientRect(); const z=Math.min(r.width/1026,r.height/770); return { button:0,bubbles:true,clientX:r.left+r.width/2+(x-513)*z,clientY:r.top+r.height/2+(y-385)*z }; };
+    const point = (x,y) => {
+      const target=canvas(), r=target.getBoundingClientRect();
+      // The engine fits integer framebuffer dimensions, not fractional CSS sizes.
+      const z=Math.min(target.width/1026,target.height/770);
+      return { button:0,bubbles:true,
+        clientX:r.left+(target.width/2+(x-513)*z)*r.width/target.width,
+        clientY:r.top+(target.height/2+(y-385)*z)*r.height/target.height };
+    };
     const sample = async (x,y) => { const event=point(x,y); canvas().dispatchEvent(new MouseEvent('mousedown',event)); canvas().dispatchEvent(new MouseEvent('mouseup',event)); await tick(); };
     const title = key => Array.from(document.querySelectorAll('[data-hierarchy-title]')).filter(visible).find(element=>element.dataset.hierarchyTitle===key);
     const highlight = async key => { if(!title(key)) throw new Error('Missing title: '+key); title(key).click(); await tick(); await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))); };
@@ -61,7 +68,7 @@ module.exports = async function smokeHierarchy(window, ipcMain, tempDir, writeCa
   const points = await run(`return Object.fromEntries(Object.entries({
     inside:[200,250], interiorBorderLeft:[348,250], interiorBorderRight:[351,250],
     xSeamLeft:[510,250], xSeamRight:[513,250], ySeamTop:[250,510], ySeamBottom:[250,513],
-    boundary:[100.5,250], island:[800.5,110], otherCounty:[680,250], otherDuchy:[880,350],
+    boundary:[101.5,250], island:[801.5,110], otherCounty:[680,250], otherDuchy:[880,350],
     otherKingdom:[50,250], otherEmpire:[1000,50], mapEdge:[1024.5,50]
   }).map(([key,[x,y]])=>{const p=point(x,y);return [key,{x:p.clientX,y:p.clientY}];}));`);
   // Read the actual framebuffer; desktop color profiles can alter capturePage RGBs.
@@ -80,6 +87,7 @@ module.exports = async function smokeHierarchy(window, ipcMain, tempDir, writeCa
   const pixel = (frame,key) => frame[key];
   const baseline = await capture();
   assert.deepEqual(pixel(baseline,'inside'), colors[1], 'Base map GPU output is wrong');
+  assert.deepEqual(pixel(baseline,'island'), colors[1], 'Detached-island sample missed the province before highlighting');
   await run(`
     await highlight('c_one');
     if(title('c_one').getAttribute('aria-pressed')!=='true') throw new Error('Active county is not indicated');
