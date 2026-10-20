@@ -57,7 +57,7 @@ Desktop Electron app for painting CK3 mod province maps. Load a mod directory, p
 - `.github/workflows/build.yml` validates/packages Windows and Linux x64. Only version-tag pushes create draft releases after VT scans; ordinary pushes/PRs/manual runs only upload build artifacts. Keep actions pinned, build jobs read-only, and the VT key out of npm/build steps. See `docs/RELEASING.md` and built-in-only release tooling in `scripts/release.cjs` / `scripts/virustotal.cjs`. Never replace a published release or fabricate scan counts.
 
 - `npm run dev` — Start dev server + Electron
-- `npm test` — Run vitest (290 tests across 18 files)
+- `npm test` — Run vitest (292 tests across 18 files)
 - `npm run typecheck` — TypeScript checks
 - `npm run build` — Production build via electron-vite
 - `npm run test:electron` — Hidden-window renderer/preload/IPC/PNG smoke test (requires a build and graphical session)

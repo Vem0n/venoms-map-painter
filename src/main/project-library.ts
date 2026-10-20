@@ -10,6 +10,11 @@ const absolute = (value: string): string => {
   return path.resolve(value);
 };
 
+// Windows realpath may change drive-letter or directory casing. Native relative
+// comparison respects Windows casing rules and keeps POSIX paths case-sensitive.
+// It needs no filesystem access, so an offline Workshop folder can be forgotten.
+const sameFolder = (left: string, right: string): boolean => path.relative(left, right) === '';
+
 /** Read descriptor display names without loading any map image or CSV contents. */
 async function projectAt(modPath: string, workshopRoot: string, warnings: string[]): Promise<WorkshopProject | null> {
   try {
@@ -98,7 +103,7 @@ export class ProjectLibraryStore {
   }
 
   private async scan(library: ProjectLibrary, folders: string[]): Promise<ProjectLibrary> {
-    let projects = library.projects.filter(project => !folders.includes(project.workshopRoot));
+    let projects = library.projects.filter(project => !folders.some(folder => sameFolder(folder, project.workshopRoot)));
     const warnings: string[] = [];
     for (const folder of folders) {
       try {
@@ -108,7 +113,7 @@ export class ProjectLibraryStore {
       } catch (error) {
         warnings.push(`${folder}: ${error instanceof Error ? error.message : String(error)}`);
         // An unmounted library must not silently erase the remembered project names.
-        projects.push(...library.projects.filter(project => project.workshopRoot === folder).map(project => ({ ...project, available: false })));
+        projects.push(...library.projects.filter(project => sameFolder(project.workshopRoot, folder)).map(project => ({ ...project, available: false })));
       }
     }
     projects = projects.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base', numeric: true }) || a.modPath.localeCompare(b.modPath));
@@ -119,8 +124,9 @@ export class ProjectLibraryStore {
     return this.mutate(async library => {
       const canonical = await fs.realpath(absolute(folder));
       if (!(await fs.stat(canonical)).isDirectory()) throw new Error('Choose a Workshop content folder.');
-      const workshopFolders = library.workshopFolders.includes(canonical) ? library.workshopFolders : [...library.workshopFolders, canonical];
-      return this.scan({ ...library, workshopFolders }, [canonical]);
+      const registered = library.workshopFolders.find(folder => sameFolder(folder, canonical));
+      const workshopFolders = registered ? library.workshopFolders : [...library.workshopFolders, canonical];
+      return this.scan({ ...library, workshopFolders }, [registered ?? canonical]);
     });
   }
 
@@ -129,8 +135,8 @@ export class ProjectLibraryStore {
   removeFolder(folder: string): Promise<ProjectLibrary> {
     return this.mutate(async library => {
       const target = absolute(folder);
-      return { ...library, workshopFolders: library.workshopFolders.filter(root => root !== target),
-        projects: library.projects.filter(project => project.workshopRoot !== target), warnings: [] };
+      return { ...library, workshopFolders: library.workshopFolders.filter(root => !sameFolder(root, target)),
+        projects: library.projects.filter(project => !sameFolder(project.workshopRoot, target)), warnings: [] };
     });
   }
 }

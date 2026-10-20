@@ -2,6 +2,8 @@
 
 ## v2.2.0 — Map Editing, Save Safety & Automated Releases
 
+- Fixed forgetting Workshop folders on Windows when filesystem-normalized paths differ in casing; offline folders can still be removed from the project list.
+
 - Added GitHub Actions builds for Windows installer/portable/ZIP and Linux AppImage/DEB/RPM. Version tags create draft releases for review with changelog sections, source commit SHA, SHA-256 checksums and automated VirusTotal scans of the exact Windows EXEs.
 
 - Replaced custom UI icons with a consistent, locally vendored Tabler Outline subset, including clearer sidebar tools and distinct project/draft file actions. Added sidebar button accessibility labels, upstream source mapping and the full MIT notice bundled with releases; no npm dependency was added.

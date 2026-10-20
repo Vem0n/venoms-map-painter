@@ -130,6 +130,35 @@ describe('master project metadata', () => {
     expect((await store.get()).projects.map(project => project.name)).toEqual(['Second library']);
   });
 
+  it('forgets an offline Workshop folder without resolving it on disk', async () => {
+    await mod(workshop, '100', 'name = "Offline library"');
+    await store.addFolder(workshop);
+    await fs.rename(workshop, path.join(root, 'offline'));
+    const result = await store.removeFolder(workshop);
+    expect(result.workshopFolders).toEqual([]);
+    expect(result.projects).toEqual([]);
+  });
+
+  it('matches Windows folder casing when forgetting an offline folder without removing other libraries', async () => {
+    const other = path.join(root, 'other-workshop');
+    await mod(workshop, '100', 'name = "First library"');
+    await mod(other, '200', 'name = "Second library"');
+    await store.addFolder(workshop);
+    await store.addFolder(other);
+    await fs.rename(workshop, path.join(root, 'offline'));
+    // Exercise the real Win32 comparison on every test host, including Linux.
+    const windowsRelative = path.win32.relative;
+    const relative = vi.spyOn(path, 'relative').mockImplementation(windowsRelative);
+    try {
+      const result = await store.removeFolder(workshop.toUpperCase());
+      expect(result.workshopFolders).toEqual([await fs.realpath(other)]);
+      expect(result.projects.map(project => project.name)).toEqual(['Second library']);
+      expect((await store.rescan()).projects.map(project => project.name)).toEqual(['Second library']);
+    } finally {
+      relative.mockRestore();
+    }
+  });
+
   it('refuses to overwrite corrupt master metadata', async () => {
     await fs.mkdir(path.dirname(store.filePath), { recursive: true });
     await fs.writeFile(store.filePath, '{"broken":');
