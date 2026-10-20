@@ -62,6 +62,10 @@ interface ProvinceInspectorProps {
   onProvinceEdit: (province: ProvinceData) => void;
   /** Callback when a hierarchy title key is renamed */
   onTitleRename: (oldKey: string, newKey: string) => void;
+  highlightedTitle: string | null;
+  highlightedTier: Exclude<LandedTitleNode['tier'], 'b'> | null;
+  onTitleHighlight: (titleKey: string) => void;
+  titleProvinceCount: number;
   /** Callback to save all changes */
   onSave: () => void;
   /** Whether there are unsaved changes */
@@ -80,6 +84,7 @@ export default function ProvinceInspector({
   onFetchHierarchy,
   onProvinceEdit,
   onTitleRename,
+  highlightedTitle, highlightedTier, onTitleHighlight, titleProvinceCount,
   onSave,
   isDirty,
   modLoaded,
@@ -394,6 +399,16 @@ export default function ProvinceInspector({
         De Jure Hierarchy
       </h4>
 
+      <p style={{ color: theme.text.secondary, fontSize: theme.font.sizeXs, margin: '0 0 8px' }}>
+        Click a tier to outline its provinces, then click other provinces to compare titles at that tier. Click again or press Esc to clear.
+      </p>
+      {highlightedTitle && <div role="status" style={{ color: theme.text.secondary, fontSize: theme.font.sizeSm, marginBottom: 8 }}>
+        {highlightedTitle}: {titleProvinceCount} province{titleProvinceCount === 1 ? '' : 's'}
+        {titleProvinceCount === 0 ? ' — no assigned provinces in the current map data' : ''}
+      </div>}
+      {!loadingHierarchy && hierarchy.length === 0 && <p style={{ color: theme.text.secondary, fontSize: theme.font.sizeSm }}>
+        No de jure assignment. Assign a parent county in Create for a pending province, or update the mod’s landed titles.
+      </p>}
       {loadingHierarchy ? (
         <div style={{ color: theme.text.muted, fontSize: theme.font.sizeMd }}>Loading hierarchy...</div>
       ) : (
@@ -411,7 +426,9 @@ export default function ProvinceInspector({
           {TIER_ORDER.map(tier => {
             const title = hierarchy.find(t => t.tier === tier);
             const isEditing = editingTier === tier;
-            const dotColor = title ? (TIER_COLORS[tier] || theme.accent.blue) : theme.border.default;
+            const active = tier === highlightedTier;
+            const TitleLabel = tier === 'b' ? 'span' : 'button';
+            const dotColor = title || active ? (TIER_COLORS[tier] || theme.accent.blue) : theme.border.default;
             return (
               <div key={tier} style={{
                 position: 'relative',
@@ -429,6 +446,9 @@ export default function ProvinceInspector({
                   background: dotColor,
                   border: `2px solid ${theme.bg.panel}`,
                   boxSizing: 'border-box',
+                  outline: active ? `2px solid ${dotColor}` : 'none',
+                  outlineOffset: 2,
+                  boxShadow: active ? `0 0 10px 3px ${dotColor}` : 'none',
                 }} />
                 <div style={{
                   color: theme.text.muted,
@@ -457,16 +477,25 @@ export default function ProvinceInspector({
                       autoFocus
                     />
                   ) : (
-                    <div
+                    <TitleLabel
+                      type={tier === 'b' ? undefined : 'button'}
+                      aria-label={tier === 'b' ? undefined : `Highlight ${TIER_LABELS[tier].toLowerCase()} ${title.key}`}
+                      aria-pressed={tier === 'b' ? undefined : active}
+                      data-hierarchy-title={title.key}
                       style={{
-                        color: theme.text.primary, fontFamily: theme.font.mono, fontSize: theme.font.sizeMd,
-                        cursor: 'text', padding: '1px 0',
+                        color: active ? dotColor : theme.text.primary,
+                        fontFamily: theme.font.mono, fontSize: theme.font.sizeMd,
+                        background: 'transparent', border: 0, textAlign: 'left',
+                        cursor: tier === 'b' ? 'text' : 'pointer', padding: '1px 0',
+                        textDecoration: active ? 'underline' : 'none', textUnderlineOffset: 3,
+                        overflowWrap: 'anywhere', maxWidth: '100%',
                       }}
+                      onClick={() => { if (tier !== 'b') onTitleHighlight(title.key); }}
                       onDoubleClick={() => handleTitleEditStart(tier, title.key)}
-                      title="Double-click to rename"
+                      title={tier === 'b' ? 'Double-click to rename' : 'Click to toggle map outline. Double-click to rename.'}
                     >
                       {title.key}
-                    </div>
+                    </TitleLabel>
                   )
                 ) : (
                   <div style={{ color: theme.text.muted, fontFamily: theme.font.mono, fontSize: theme.font.sizeMd }}>
@@ -498,6 +527,7 @@ export default function ProvinceInspector({
       <div style={dividerStyle()} />
       <button
         onClick={onSave}
+        title="Write map image and province data to the mod folder (Ctrl+Shift+S)"
         disabled={!isDirty}
         style={{
           width: '100%',
@@ -514,7 +544,7 @@ export default function ProvinceInspector({
           boxShadow: isDirty ? `0 0 12px ${theme.accent.blueMuted}` : 'none',
         }}
       >
-        {isDirty ? 'Save Changes' : 'No Changes'}
+        {isDirty ? 'Save to Mod' : 'No Changes'}
       </button>
     </div>
   );

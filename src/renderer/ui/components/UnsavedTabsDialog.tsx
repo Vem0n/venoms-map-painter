@@ -1,11 +1,13 @@
 /**
- * UnsavedTabsDialog — Shown when closing the app with multiple dirty tabs.
+ * UnsavedTabsDialog — Shared guard for closing a dirty tab or the window.
  *
- * Lists each dirty tab with a checkbox. User picks which to save,
- * then "Save Selected" saves them sequentially before closing.
+ * Window closure lists dirty tabs with checkboxes; tab closure offers one
+ * draft save. Both keep the editor open and show an error when saving fails.
  */
 
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import type { SaveFailureReport } from '@shared/types';
+import { SaveFailureNotice } from './SaveFailureDialog';
 import { theme, cardStyle } from '../theme';
 
 export interface DirtyTabEntry {
@@ -15,6 +17,8 @@ export interface DirtyTabEntry {
 
 interface UnsavedTabsDialogProps {
   dirtyTabs: DirtyTabEntry[];
+  closingTab?: boolean;
+  error?: SaveFailureReport | null;
   /** Save selected tabs then close. Called with the set of tab IDs to save. */
   onSave: (tabIds: Set<number>) => void;
   /** Discard all changes and close */
@@ -26,8 +30,10 @@ interface UnsavedTabsDialogProps {
 }
 
 export default function UnsavedTabsDialog({
-  dirtyTabs, onSave, onDiscard, onCancel, saving,
+  dirtyTabs, closingTab = false, error, onSave, onDiscard, onCancel, saving,
 }: UnsavedTabsDialogProps) {
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => { cancelRef.current?.focus(); }, []);
   const [checked, setChecked] = useState<Set<number>>(
     () => new Set(dirtyTabs.map(t => t.tabId)),
   );
@@ -43,22 +49,29 @@ export default function UnsavedTabsDialog({
 
   return (
     <div style={overlayStyle}>
-      <div style={dialogStyle}>
-        <h2 style={titleStyle}>Unsaved Changes</h2>
+      <div role="dialog" aria-modal="true" aria-labelledby="close-guard-title" style={dialogStyle} onKeyDown={event => {
+        event.stopPropagation();
+        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') event.preventDefault();
+        if (event.key === 'Escape') { event.preventDefault(); if (!saving) onCancel(); }
+      }}>
+        <h2 id="close-guard-title" style={titleStyle}>{error ? 'Saving has failed' : closingTab ? 'Close Tab' : 'Unsaved Changes'}</h2>
         <p style={descStyle}>
-          The following tabs have unsaved changes. Select which to save before closing:
+          {closingTab
+            ? 'This tab has unsaved changes. Save a draft before closing it?'
+            : 'The following tabs have unsaved changes. Select which to save as drafts before closing the window. Unselected tabs will be discarded.'}
+          {' '}Draft saves keep your work in VMP-Drafts and do not modify mod files.
         </p>
 
         <div style={listStyle}>
           {dirtyTabs.map(tab => (
             <label key={tab.tabId} style={rowStyle}>
-              <input
+              {!closingTab && <input
                 type="checkbox"
                 checked={checked.has(tab.tabId)}
                 onChange={() => toggle(tab.tabId)}
                 disabled={saving}
                 style={{ accentColor: theme.accent.blue, marginRight: 8 }}
-              />
+              />}
               <span style={{
                 color: theme.text.primary,
                 fontSize: theme.font.sizeMd,
@@ -70,15 +83,17 @@ export default function UnsavedTabsDialog({
           ))}
         </div>
 
+        {error && <SaveFailureNotice failure={error} draftSave={true} />}
+
         <div style={footerStyle}>
-          <button style={cancelBtnStyle} onClick={onCancel} disabled={saving}>Cancel</button>
-          <button style={discardBtnStyle} onClick={onDiscard} disabled={saving}>Don't Save</button>
+          <button ref={cancelRef} style={cancelBtnStyle} onClick={onCancel} disabled={saving}>{error ? 'Back to Editing' : 'Cancel'}</button>
+          <button style={discardBtnStyle} onClick={onDiscard} disabled={saving}>{error ? closingTab ? 'Close Tab Without Saving' : 'Close Without Saving' : "Don't Save"}</button>
           <button
             style={saveBtnStyle}
             onClick={() => onSave(checked)}
             disabled={saving}
           >
-            {saving ? 'Saving...' : checked.size > 0 ? `Save ${checked.size} & Close` : 'Close'}
+            {saving ? 'Saving...' : closingTab ? 'Save Draft & Close' : checked.size > 0 ? `Save ${checked.size} Draft${checked.size === 1 ? '' : 's'} & Close` : 'Discard & Close'}
           </button>
         </div>
       </div>
@@ -95,7 +110,7 @@ const overlayStyle: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  zIndex: 1000,
+  zIndex: 20000,
 };
 
 const dialogStyle: React.CSSProperties = {

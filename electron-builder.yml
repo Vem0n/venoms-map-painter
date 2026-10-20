@@ -1,6 +1,6 @@
 appId: com.ven0m.mappainter
 productName: "Ven0m's Map Painter"
-copyright: Copyright © 2025 Ven0m
+copyright: Copyright © 2026 Ven0m
 
 directories:
   output: release
@@ -11,7 +11,10 @@ files:
   - "!node_modules/**/README*"
   - "!node_modules/**/CHANGELOG*"
 
-# sharp has native bindings that need rebuilding for Electron
+extraResources:
+  - from: THIRD_PARTY_NOTICES.txt
+    to: THIRD_PARTY_NOTICES.txt
+
 npmRebuild: true
 
 mac:
@@ -27,9 +30,19 @@ win:
     - nsis
     - portable
 
+nsis:
+  artifactName: "venoms-map-painter-${version}-windows-${arch}-setup.${ext}"
+
+portable:
+  artifactName: "venoms-map-painter-${version}-windows-${arch}-portable.${ext}"
+
 linux:
+  artifactName: "venoms-map-painter-${version}-linux-${arch}.${ext}"
+  executableName: venoms-map-painter
+  maintainer: "Vem0n <94292470+Vem0n@users.noreply.github.com>"
   icon: build/icon.png
   category: Graphics
   target:
     - AppImage
     - deb
+    - rpm

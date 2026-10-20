@@ -11,6 +11,7 @@
  *   engine.startRenderLoop();
  */
 
+import { titleColorLookup } from './title-color-lookup';
 import { RGB, TileCoord, rgbToKey } from '@shared/types';
 import { TILE_SIZE, BYTES_PER_PIXEL, MIN_ZOOM, MAX_ZOOM } from '@shared/constants';
 import { createProgram, TILE_VERTEX_SHADER, TILE_FRAGMENT_SHADER, PASTE_VERTEX_SHADER, PASTE_FRAGMENT_SHADER } from './shaders';
@@ -68,6 +69,10 @@ export class TileEngine {
   private pastePreviewH = 0;
   private showPastePreview = false;
 
+  /** Independent read-only hierarchy layer, keyed by province RGB. */
+  private titleTexture: WebGLTexture | null = null;
+  private titleTint: RGB = { r: 88, g: 166, b: 255 };
+
   // WebGL resources
   private program: WebGLProgram;
   private pasteProgram: WebGLProgram;
@@ -87,6 +92,14 @@ export class TileEngine {
     zoom: WebGLUniformLocation;
     resolution: WebGLUniformLocation;
     tileTexture: WebGLUniformLocation;
+    showTitle: WebGLUniformLocation;
+    titleColors: WebGLUniformLocation;
+    titleTint: WebGLUniformLocation;
+    mapSize: WebGLUniformLocation;
+    titleLeft: WebGLUniformLocation;
+    titleRight: WebGLUniformLocation;
+    titleUp: WebGLUniformLocation;
+    titleDown: WebGLUniformLocation;
     showGrid: WebGLUniformLocation;
     overlayTexture: WebGLUniformLocation;
     showOverlay: WebGLUniformLocation;
@@ -122,6 +135,14 @@ export class TileEngine {
       zoom: getUniform('u_zoom'),
       resolution: getUniform('u_resolution'),
       tileTexture: getUniform('u_tileTexture'),
+      showTitle: getUniform('u_showTitle'),
+      titleColors: getUniform('u_titleColors'),
+      titleTint: getUniform('u_titleTint'),
+      mapSize: getUniform('u_mapSize'),
+      titleLeft: getUniform('u_titleLeft'),
+      titleRight: getUniform('u_titleRight'),
+      titleUp: getUniform('u_titleUp'),
+      titleDown: getUniform('u_titleDown'),
       showGrid: getUniform('u_showGrid'),
       overlayTexture: getUniform('u_overlayTexture'),
       showOverlay: getUniform('u_showOverlay'),
@@ -196,6 +217,8 @@ export class TileEngine {
     this.overlayBuffers.length = 0;
     this.overlayGpuDirty.clear();
     this.showOverlay = false;
+
+    this.clearTitleHighlight();
 
     // Release heightmap resources
     for (const tex of this.heightmapTextures) {
@@ -384,6 +407,30 @@ export class TileEngine {
   /** Check if overlay is currently visible. */
   isOverlayVisible(): boolean {
     return this.showOverlay;
+  }
+
+  /** Set the title membership lookup. Does not change pixels, dirty state or undo. */
+  setTitleHighlight(colors: RGB[], tint: RGB): void {
+    if (!colors.length) { this.clearTitleHighlight(); return; }
+    const gl = this.gl;
+    if (!this.titleTexture) this.titleTexture = gl.createTexture();
+    if (!this.titleTexture) throw new Error('Failed to create hierarchy texture');
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_3D, this.titleTexture);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
+    gl.texImage3D(gl.TEXTURE_3D, 0, gl.R8, 256, 256, 256, 0, gl.RED, gl.UNSIGNED_BYTE, titleColorLookup(colors));
+    this.titleTint = tint;
+    gl.activeTexture(gl.TEXTURE0);
+  }
+
+  /** Release the hierarchy view independently of previews and lasso selection. */
+  clearTitleHighlight(): void {
+    if (this.titleTexture) this.gl.deleteTexture(this.titleTexture);
+    this.titleTexture = null;
   }
 
   /* ── Heightmap Overlay ──────────────────────────────────────── */
@@ -591,6 +638,17 @@ export class TileEngine {
     gl.uniform2f(this.uniforms.tileSize, TILE_SIZE, TILE_SIZE);
     gl.uniform1i(this.uniforms.showGrid, this.showGrid ? 1 : 0);
 
+    gl.uniform1i(this.uniforms.showTitle, this.titleTexture ? 1 : 0);
+    gl.uniform1i(this.uniforms.titleColors, 3);
+    gl.uniform3f(this.uniforms.titleTint, this.titleTint.r / 255, this.titleTint.g / 255, this.titleTint.b / 255);
+    gl.uniform2f(this.uniforms.mapSize, this.mapWidth, this.mapHeight);
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_3D, this.titleTexture);
+    gl.uniform1i(this.uniforms.titleLeft, 4);
+    gl.uniform1i(this.uniforms.titleRight, 5);
+    gl.uniform1i(this.uniforms.titleUp, 6);
+    gl.uniform1i(this.uniforms.titleDown, 7);
+
     // Draw visible tiles
     const visibleTiles = this.getVisibleTiles();
     gl.activeTexture(gl.TEXTURE0);
@@ -629,6 +687,19 @@ export class TileEngine {
         gl.uniform1i(this.uniforms.showHeightmap, 0);
       }
 
+      if (this.titleTexture) {
+        const neighbors = [
+          tx > 0 ? tileIndex - 1 : tileIndex,
+          tx + 1 < this.tilesX ? tileIndex + 1 : tileIndex,
+          ty > 0 ? tileIndex - this.tilesX : tileIndex,
+          ty + 1 < this.tilesY ? tileIndex + this.tilesX : tileIndex,
+        ];
+        neighbors.forEach((index, side) => {
+          gl.activeTexture(gl.TEXTURE4 + side);
+          gl.bindTexture(gl.TEXTURE_2D, this.tileTextures[index]);
+        });
+        gl.activeTexture(gl.TEXTURE0);
+      }
       gl.drawArrays(gl.TRIANGLES, 0, 6);
     }
 

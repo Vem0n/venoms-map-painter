@@ -9,6 +9,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import MainCanvas from './components/MainCanvas';
 import Toolbar from './components/Toolbar';
+import ProjectsDialog from './components/ProjectsDialog';
 import VerticalToolBar from './components/VerticalToolBar';
 import StatusBar from './components/StatusBar';
 import ColorPicker from './components/ColorPicker';
@@ -19,6 +20,8 @@ import { UndoManager } from '@engine/undo-manager';
 import { ColorRegistry } from '@registry/color-registry';
 import { ToolManager } from '@tools/tool-manager';
 import ProvinceSearch from './components/ProvinceSearch';
+import SaveFailureDialog from './components/SaveFailureDialog';
+import ModSaveDialog from './components/ModSaveDialog';
 import ReconcileDialog from './components/ReconcileDialog';
 import PendingOrphanDialog from './components/PendingOrphanDialog';
 import PendingProvinces from './components/PendingProvinces';
@@ -33,7 +36,7 @@ import Toast from './components/Toast';
 import SectorMapDrawer from './components/SectorMapDrawer';
 import IdDriftDialog from './components/IdDriftDialog';
 import { theme } from './theme';
-import type { ToolType, RGB, CreateProvinceRequest, PendingProvince } from '@shared/types';
+import type { ToolType, RGB, CreateProvinceRequest, PendingProvince, ProvinceData } from '@shared/types';
 import { rgbToKey } from '@shared/types';
 import { PendingProvinceMap } from '@registry/pending-province-map';
 import type { CopyPasteManager } from '@tools/copy-paste-manager';
@@ -57,7 +60,6 @@ interface AppProps {
   isActive?: boolean;
   onDirtyStateChange?: (dirty: boolean) => void;
   onTabLabelChange?: (label: string) => void;
-  isMultiTab?: boolean;
   /** Global copy-paste manager shared across tabs */
   copyPasteManager?: CopyPasteManager;
   /** Register a save callback so TabShell can trigger saves on this tab */
@@ -69,7 +71,6 @@ export default function App({
   isActive = true,
   onDirtyStateChange,
   onTabLabelChange,
-  isMultiTab = false,
   copyPasteManager,
   onRegisterSave,
 }: AppProps = {}) {
@@ -85,7 +86,11 @@ export default function App({
   }
   const cpm = copyPasteManager ?? fallbackCpmRef.current!;
 
+  const [showProjects, setShowProjects] = useState(false);
+  const [projectNames, setProjectNames] = useState<Record<string, string>>({});
+
   // Core shared refs — created once, persisted across renders
+  const sourceDefinitionsRef = useRef<ProvinceData[] | null>(null);
   const engineRef = useRef<TileEngine | null>(null);
   const undoManagerRef = useRef<UndoManager>(new UndoManager());
   const registryRef = useRef<ColorRegistry>(new ColorRegistry());
@@ -98,10 +103,9 @@ export default function App({
   const viewport = useViewportSettings({ engineRef });
 
   const handleColorRemapRef = useRef<(oldColor: RGB, newColor: RGB) => void>(() => {});
-  const activeColorRef = useRef<RGB>({ r: 255, g: 0, b: 0 });
 
   const lasso = useLassoSelection({
-    engineRef, toolManagerRef, registryRef, undoManagerRef, activeColorRef,
+    engineRef, toolManagerRef, registryRef, undoManagerRef,
     copyPasteManager: cpm,
     setStatus,
     setDraftDirty: (dirty: boolean) => setDraftDirtyRef.current(dirty),
@@ -127,9 +131,6 @@ export default function App({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [lasso.clearSelection]),
   });
-
-  // Keep activeColorRef in sync with painting tool's current color
-  activeColorRef.current = painting.activeColor;
 
   // Placeholder refs for cross-hook wiring (avoids forward reference issues)
   const setDraftDirtyRef = useRef<(dirty: boolean) => void>(() => {});
@@ -164,23 +165,10 @@ export default function App({
   });
 
   const inspector = useProvinceInspector({
-    engineRef, registryRef, modPathRef,
+    engineRef, registryRef, modPathRef, pendingMapRef,
     setStatus,
     setDraftDirty: (dirty: boolean) => setDraftDirtyRef.current(dirty),
     setZoomLevel: viewport.setZoomLevel,
-  });
-
-  const save = useSaveReconciliation({
-    engineRef, registryRef, pendingMapRef, modPathRef,
-    modifiedProvinceIds: inspector.modifiedProvinceIds,
-    landedTitles: inspector.landedTitles,
-    pendingSaveOptions: pending.pendingSaveOptions,
-    setStatus,
-    setDraftDirty: (dirty: boolean) => setDraftDirtyRef.current(dirty),
-    setModDirty: inspector.setModDirty,
-    setModifiedProvinceIds: inspector.setModifiedProvinceIds,
-    setPendingCount: pending.setPendingCount,
-    setProvinceCount: pending.setProvinceCount,
   });
 
   const voronoi = useVoronoiGenerator({
@@ -201,6 +189,10 @@ export default function App({
   const draft = useDraftSaveLoad({
     engineRef, registryRef, toolManagerRef, undoManagerRef, pendingMapRef, modPathRef,
     setStatus,
+    sourceDefinitionsRef,
+    modifiedProvinceIds: inspector.modifiedProvinceIds,
+    titleRenames: inspector.titleRenames,
+    setTitleRenames: inspector.setTitleRenames,
     pendingSaveOptions: pending.pendingSaveOptions,
     emptyColors: colorPicking.emptyColors,
     lockedColor: colorPicking.lockedColor,
@@ -224,6 +216,24 @@ export default function App({
     triggerForceUpdate: undoRedo.triggerForceUpdate,
   });
 
+  const save = useSaveReconciliation({
+    engineRef, registryRef, pendingMapRef, modPathRef,
+    sourceDefinitionsRef,
+    draftLoadedName: draft.draftLoadedName,
+    titleRenames: inspector.titleRenames,
+    setTitleRenames: inspector.setTitleRenames,
+    setLandedTitles: inspector.setLandedTitles,
+    modifiedProvinceIds: inspector.modifiedProvinceIds,
+    landedTitles: inspector.landedTitles,
+    pendingSaveOptions: pending.pendingSaveOptions,
+    setStatus,
+    setDraftDirty: (dirty: boolean) => setDraftDirtyRef.current(dirty),
+    setModDirty: inspector.setModDirty,
+    setModifiedProvinceIds: inspector.setModifiedProvinceIds,
+    setPendingCount: pending.setPendingCount,
+    setProvinceCount: pending.setProvinceCount,
+  });
+
   // Register save callback for TabShell's close guard
   useEffect(() => {
     if (onRegisterSave) {
@@ -241,6 +251,8 @@ export default function App({
   handleColorRemapRef.current = pending.handleColorRemap;
 
   const mapLoader = useMapLoading({
+    sourceDefinitionsRef,
+    setTitleRenames: inspector.setTitleRenames,
     engineRef, registryRef, undoManagerRef, pendingMapRef, modPathRef, toolManagerRef,
     setStatus,
     setLandedTitles: inspector.setLandedTitles,
@@ -347,6 +359,10 @@ export default function App({
     const handleKeyDown = (e: KeyboardEvent) => {
       // In multi-tab mode, only the active tab handles shortcuts
       if (!isActive) return;
+      if (mapLoader.loading) {
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') e.preventDefault();
+        return;
+      }
 
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
@@ -364,15 +380,15 @@ export default function App({
         return;
       }
 
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'S') {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 's') {
         e.preventDefault();
-        draft.handleSaveDraft();
+        save.handleSaveAll();
         return;
       }
 
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 's') {
         e.preventDefault();
-        save.handleSaveAll();
+        draft.handleSaveDraft();
         return;
       }
 
@@ -393,6 +409,7 @@ export default function App({
       }
 
       if (e.key === 'Escape') {
+        inspector.clearTitleHighlight();
         if (copyPaste.pasteMode) {
           copyPaste.handlePasteCancel();
           return;
@@ -432,21 +449,7 @@ export default function App({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isActive, painting.handleToolChange, undoRedo.handleUndo, undoRedo.handleRedo, save.handleSaveAll, draft.handleSaveDraft, viewport.handleToggleHoverInspect, voronoi.pickingGenerator, voronoi.handleGeneratorCancelPicking, lasso.selectedProvinces, lasso.clearSelection, lasso.handleCopy, colorPicking.setPickingEmpty, colorPicking.setPickingLock, colorPicking.setPickingColor, copyPaste.handleStartPaste, copyPaste.pasteMode, copyPaste.handlePasteCancel, copyPaste.handlePasteRotate, copyPaste.handlePasteScale, copyPaste.handlePasteReset]);
-
-  // Guard against closing with unsaved draft changes (only in single-tab mode)
-  useEffect(() => {
-    if (isMultiTab) return; // TabShell owns the close guard in multi-tab mode
-    const cleanup = window.mapPainter.onCheckBeforeClose(() => {
-      if (!draft.draftDirtyRef.current) {
-        window.mapPainter.confirmClose();
-      } else {
-        draft.pendingNavigationRef.current = () => window.mapPainter.confirmClose();
-        draft.guardUnsavedDraft(() => window.mapPainter.confirmClose());
-      }
-    });
-    return cleanup;
-  }, [isMultiTab, draft.draftDirtyRef, draft.pendingNavigationRef, draft.guardUnsavedDraft]);
+  }, [isActive, mapLoader.loading, painting.handleToolChange, undoRedo.handleUndo, undoRedo.handleRedo, save.handleSaveAll, draft.handleSaveDraft, viewport.handleToggleHoverInspect, voronoi.pickingGenerator, voronoi.handleGeneratorCancelPicking, lasso.selectedProvinces, lasso.clearSelection, inspector.clearTitleHighlight, lasso.handleCopy, colorPicking.setPickingEmpty, colorPicking.setPickingLock, colorPicking.setPickingColor, copyPaste.handleStartPaste, copyPaste.pasteMode, copyPaste.handlePasteCancel, copyPaste.handlePasteRotate, copyPaste.handlePasteScale, copyPaste.handlePasteReset]);
 
   // Notify TabShell of dirty state changes
   useEffect(() => {
@@ -458,9 +461,9 @@ export default function App({
     if (inspector.modLoaded && modPathRef.current && onTabLabelChange) {
       const parts = modPathRef.current.replace(/\\/g, '/').split('/');
       const modName = parts[parts.length - 1] || parts[parts.length - 2] || 'Map';
-      onTabLabelChange(modName);
+      onTabLabelChange(projectNames[modPathRef.current] ?? modName);
     }
-  }, [inspector.modLoaded, onTabLabelChange]);
+  }, [inspector.modLoaded, mapLoader.loading, draft.draftLoadedName, projectNames, onTabLabelChange]);
 
   /* ── Derived values ────────────────────────────────────────── */
 
@@ -484,6 +487,7 @@ export default function App({
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', userSelect: 'none', background: theme.bg.base }}>
       <Toolbar
+        onProjects={() => setShowProjects(true)}
         onOpenMap={mapLoader.handleOpenMap}
         onSaveAll={save.handleSaveAll}
         onSaveDraft={draft.handleSaveDraft}
@@ -552,11 +556,20 @@ export default function App({
             onPasteWheel={copyPaste.handlePasteWheel}
           />
 
+          {inspector.highlightedTier && (
+            <div data-title-highlight={inspector.highlightedTitle ?? ''} data-title-tier={inspector.highlightedTier} style={{ position: 'absolute', top: 12, left: 12, zIndex: 850, display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', background: theme.bg.surface, border: `1px solid ${theme.border.default}`, borderRadius: theme.radius.md, color: theme.text.primary, fontSize: theme.font.sizeMd, boxShadow: theme.shadow.dropdown }}>
+              <span>{inspector.titleHighlightLabel}{inspector.highlightedTitle && ` · ${inspector.titleProvinceCount} province${inspector.titleProvinceCount === 1 ? '' : 's'}`}</span>
+              <button type="button" onClick={inspector.clearTitleHighlight} title="Clear hierarchy highlight (Esc)" aria-label="Clear hierarchy highlight" style={{ background: 'transparent', border: 0, color: theme.text.primary, cursor: 'pointer', fontSize: 18 }}>×</button>
+            </div>
+          )}
+
           <SelectionActionBar
             selectedCount={lasso.selectedProvinces.size}
             selectMode={lasso.selectMode}
             onSelectModeChange={lasso.setSelectMode}
             onHarmonize={lasso.handleHarmonize}
+            harmonizeColor={lasso.harmonizeColor}
+            onHarmonizeColorChange={lasso.setHarmonizeColor}
             onCopy={lasso.handleCopy}
             onClear={lasso.clearSelection}
             harmonizing={lasso.harmonizing}
@@ -706,7 +719,11 @@ export default function App({
                 onFetchHierarchy={inspector.handleFetchHierarchy}
                 onProvinceEdit={inspector.handleProvinceEdit}
                 onTitleRename={inspector.handleTitleRename}
-                onSave={inspector.handleSaveMod}
+                highlightedTitle={inspector.highlightedTitle}
+                highlightedTier={inspector.highlightedTier}
+                onTitleHighlight={inspector.handleTitleHighlight}
+                titleProvinceCount={inspector.titleProvinceCount}
+                onSave={save.handleSaveAll}
                 isDirty={inspector.modDirty}
                 modLoaded={inspector.modLoaded}
               />
@@ -762,10 +779,44 @@ export default function App({
         provinceCount={pending.provinceCount}
       />
 
+      {showProjects && (
+        <ProjectsDialog
+          onClose={() => setShowProjects(false)}
+          onOpenProject={project => {
+            setShowProjects(false);
+            setProjectNames(previous => ({ ...previous, [project.modPath]: project.name }));
+            mapLoader.handleOpenProject(project.modPath);
+          }}
+          onLoadDraft={project => {
+            setShowProjects(false);
+            setProjectNames(previous => ({ ...previous, [project.modPath]: project.name }));
+            draft.handleLoadProjectDraft(project.modPath);
+          }}
+        />
+      )}
+
+      {(save.saveFailure || draft.saveFailure) && (
+        <SaveFailureDialog
+          failure={(save.saveFailure || draft.saveFailure)!}
+          draftSave={!save.saveFailure}
+          onDismiss={() => { save.clearSaveFailure(); draft.clearSaveFailure(); }}
+          onSaveDraft={() => { save.clearSaveFailure(); draft.clearSaveFailure(); draft.handleSaveDraft(); }}
+        />
+      )}
+
+      {save.modSaveReview && (
+        <ModSaveDialog
+          {...save.modSaveReview}
+          onConfirm={save.handleModSaveConfirm}
+          onCancel={save.handleModSaveCancel}
+        />
+      )}
+
       {save.showReconcileDialog && (
         <ReconcileDialog
           orphanedProvinces={save.reconcileOrphans}
-          orphanedParents={save.reconcileParents}
+          landedTitles={inspector.landedTitles}
+          onKeepAll={() => save.handleReconcileConfirm([], [])}
           onConfirm={save.handleReconcileConfirm}
           onCancel={save.handleReconcileCancel}
         />

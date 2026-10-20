@@ -1,131 +1,114 @@
 /**
- * Image I/O — Load and save PNG files using sharp.
- *
- * Runs in the main process. Returns raw RGBA buffers for the renderer.
- * sharp handles the heavy lifting of PNG decode/encode natively.
- *
- * PNG decoding runs in a short-lived Worker thread so that all sharp/libvips
- * native memory is freed when the worker terminates. The decoded RGBA data is
- * passed through a temp file so the main thread's V8 heap never holds the
- * ~134MB buffer — fs.readFile returns an externally-allocated Buffer that
- * doesn't inflate the V8 heap high-water mark.
+ * Lossless PNG I/O in short-lived workers.
+ * pngjs avoids native image-library conflicts in Electron on Linux. Decoded
+ * pixels pass through a temporary file so the main process reads an external
+ * Buffer rather than copying a full map into its V8 heap.
  */
 
-import sharp from 'sharp';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
 import { Worker } from 'worker_threads';
 
-// Disable sharp's cache for save operations that still run on the main thread.
-sharp.cache(false);
-sharp.concurrency(1);
-
 interface LoadResult {
-  /** Raw RGBA pixel data */
   buffer: Uint8Array;
   width: number;
   height: number;
 }
 
-/**
- * Load a PNG file and return its raw RGBA buffer.
- *
- * Runs sharp in a Worker thread to isolate native memory. The worker writes
- * decoded RGBA to a temp file and posts back only the metadata. The main
- * thread reads the temp file with fs.readFile (external allocation, not V8
- * heap) and cleans up. Result: main process stays at ~33MB after load.
- */
-export async function loadPng(filePath: string): Promise<LoadResult> {
-  const tmpFile = path.join(
-    os.tmpdir(),
-    `map-painter-${Date.now()}-${Math.random().toString(36).slice(2)}.raw`,
-  );
+interface WorkerResult {
+  width?: number;
+  height?: number;
+  error?: string;
+}
 
-  // Resolve sharp's path from the main process so the worker doesn't rely on
-  // CWD-based module resolution (which breaks when the packaged app is run
-  // from a different directory than where it's installed).
-  const sharpPath = require.resolve('sharp');
+type WorkerRequest =
+  | { operation: 'load'; filePath: string; tmpFile: string }
+  | { operation: 'save'; filePath: string; rgbaBuffer: Uint8Array; width: number; height: number };
 
-  const meta = await new Promise<{ width: number; height: number }>((resolve, reject) => {
-    const workerCode = `
-      const { parentPort, workerData } = require('worker_threads');
-      const sharp = require(${JSON.stringify(sharpPath)});
-      const fs = require('fs');
-      sharp.cache(false);
-      sharp.concurrency(1);
-      (async () => {
-        try {
-          const { data, info } = await sharp(workerData.filePath)
-            .ensureAlpha()
-            .raw()
-            .toBuffer({ resolveWithObject: true });
-          if (!info.width || !info.height) {
-            throw new Error('Could not read image dimensions');
-          }
-          fs.writeFileSync(workerData.tmpFile, data);
-          parentPort.postMessage({ width: info.width, height: info.height });
-        } catch (err) {
-          parentPort.postMessage({ error: err.message || String(err) });
-        }
-      })();
-    `;
-
-    const worker = new Worker(workerCode, {
-      eval: true,
-      workerData: { filePath, tmpFile },
-    });
-
-    worker.on('message', (msg: { width?: number; height?: number; error?: string }) => {
-      if (msg.error) {
-        reject(new Error(msg.error));
+/** Run PNG processing off the main thread and wait for the worker to release its buffers. */
+function processPng(request: WorkerRequest): Promise<WorkerResult> {
+  // Resolve in the main process so workers also work from packaged ASAR files
+  // and when the application is launched from another working directory.
+  const pngPath = require.resolve('pngjs');
+  const workerCode = `
+    const { parentPort, workerData } = require('worker_threads');
+    const { PNG } = require(${JSON.stringify(pngPath)});
+    const fs = require('fs');
+    try {
+      if (workerData.operation === 'load') {
+        // Do not apply gamma correction: RGB values identify provinces.
+        const image = PNG.sync.read(fs.readFileSync(workerData.filePath));
+        fs.writeFileSync(workerData.tmpFile, image.data);
+        parentPort.postMessage({ width: image.width, height: image.height });
       } else {
-        resolve({ width: msg.width!, height: msg.height! });
+        const { rgbaBuffer, width, height, filePath } = workerData;
+        const rgb = Buffer.allocUnsafe(width * height * 3);
+        // Drop alpha explicitly instead of compositing against a background.
+        // Even transparent input pixels must retain their exact province RGB.
+        for (let src = 0, dest = 0; src < rgbaBuffer.length; src += 4) {
+          rgb[dest++] = rgbaBuffer[src];
+          rgb[dest++] = rgbaBuffer[src + 1];
+          rgb[dest++] = rgbaBuffer[src + 2];
+        }
+        const encoded = PNG.sync.write({ width, height, data: rgb }, {
+          colorType: 2,
+          inputColorType: 2,
+          inputHasAlpha: false,
+          bitDepth: 8,
+          deflateLevel: 6,
+        });
+        fs.writeFileSync(filePath, encoded);
+        parentPort.postMessage({});
       }
-    });
+    } catch (error) {
+      parentPort.postMessage({ error: error instanceof Error ? error.message : String(error) });
+    }
+  `;
 
-    worker.on('error', reject);
-
-    worker.on('exit', (code) => {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(workerCode, { eval: true, workerData: request });
+    let result: WorkerResult | undefined;
+    worker.on('message', (message: WorkerResult) => { result = message; });
+    worker.once('error', reject);
+    worker.once('exit', (code) => {
       if (code !== 0) {
-        reject(new Error(`Image loader worker exited with code ${code}`));
+        reject(new Error(`PNG worker exited with code ${code}`));
+      } else if (!result) {
+        reject(new Error('PNG worker exited without a result'));
+      } else if (result.error) {
+        reject(new Error(result.error));
+      } else {
+        resolve(result);
       }
     });
   });
+}
 
-  // Worker has exited — all sharp/libvips native memory is freed.
-  // Read the temp file. fs.readFile returns a Buffer backed by external
-  // (C++ allocated) memory that doesn't count toward V8's heap limit
-  // and is properly freed when dereferenced.
+/** Decode a PNG into 8-bit RGBA without changing its RGB values or applying gamma correction. */
+export async function loadPng(filePath: string): Promise<LoadResult> {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'map-painter-'));
+  const tmpFile = path.join(tmpDir, 'pixels.raw');
   try {
+    const { width, height } = await processPng({ operation: 'load', filePath, tmpFile });
+    if (!width || !height) throw new Error('Could not read image dimensions');
     const buffer = await fs.readFile(tmpFile);
-    return { buffer, width: meta.width, height: meta.height };
+    return { buffer, width, height };
   } finally {
-    // Clean up temp file (fire and forget)
-    fs.unlink(tmpFile).catch(() => {});
+    await fs.rm(tmpDir, { recursive: true, force: true });
   }
 }
 
-/**
- * Save a raw RGBA buffer as a PNG file.
- * Backup is handled by the caller (VMP-Backups/).
- */
+/** Save exact RGB pixels as a 24-bit PNG. The caller handles VMP-Backups/. */
 export async function savePng(
   filePath: string,
   rgbaBuffer: Uint8Array,
   width: number,
   height: number,
 ): Promise<void> {
-  // CK3 requires 24-bit RGB PNG (no alpha). Saving as RGBA (32-bit) causes CTD.
-  // Strip the alpha channel before encoding.
-  await sharp(Buffer.from(rgbaBuffer), {
-    raw: {
-      width,
-      height,
-      channels: 4,
-    },
-  })
-    .removeAlpha()
-    .png({ compressionLevel: 6 })
-    .toFile(filePath);
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) ||
+      width <= 0 || height <= 0 || rgbaBuffer.byteLength !== width * height * 4) {
+    throw new Error('RGBA buffer does not match the image dimensions');
+  }
+  await processPng({ operation: 'save', filePath, rgbaBuffer, width, height });
 }

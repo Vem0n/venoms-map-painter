@@ -1,10 +1,12 @@
 /** Map loading: Open Map workflow */
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import type { RGB, ProvinceData, LandedTitleNode } from '@shared/types';
 import type { EngineRef, RegistryRef, UndoManagerRef, PendingMapRef, ModPathRef, ToolManagerRef } from './types';
 
 export interface UseMapLoadingParams {
+  sourceDefinitionsRef: React.MutableRefObject<ProvinceData[] | null>;
+  setTitleRenames: (renames: Array<{ oldKey: string; newKey: string }>) => void;
   engineRef: EngineRef;
   registryRef: RegistryRef;
   undoManagerRef: UndoManagerRef;
@@ -30,6 +32,7 @@ export interface UseMapLoadingParams {
 }
 
 export function useMapLoading({
+  sourceDefinitionsRef, setTitleRenames,
   engineRef, registryRef, undoManagerRef, pendingMapRef, modPathRef, toolManagerRef,
   setStatus, setLandedTitles, setModLoaded, setModDirty, setModifiedProvinceIds,
   setSelectedProvince, setHistoryFiles, setProvinceCount, setPendingCount,
@@ -37,17 +40,19 @@ export function useMapLoading({
   setDraftDirty, setDraftLoadedName,
   onColorChange, triggerForceUpdate, guardUnsavedDraft,
 }: UseMapLoadingParams) {
+  const loadingRef = useRef(false);
   const [loading, setLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState<string | null>(null);
 
-  const handleOpenMapAction = useCallback(async () => {
-    if (loading) return;
+  const handleOpenMapAction = useCallback(async (selectedModPath?: string) => {
+    if (loadingRef.current) return;
+    loadingRef.current = true;
     setLoading(true);
     setLoadingMessage('Selecting directory...');
     setStatus('Selecting directory...');
 
     try {
-      const modPath = await window.mapPainter.selectDirectory();
+      const modPath = selectedModPath ?? await window.mapPainter.selectDirectory();
       if (!modPath) {
         setStatus('No directory selected');
         setLoading(false);
@@ -63,44 +68,44 @@ export function useMapLoading({
         return;
       }
 
-      // Load the image
+      // Read both essential inputs before replacing the current in-memory map.
       setLoadingMessage('Loading provinces.png...');
-      setStatus('Loading provinces.png...');
-      let imgW: number;
-      let imgH: number;
-      {
-        const { buffer, width, height } = await window.mapPainter.loadImage(modPath);
-        imgW = width;
-        imgH = height;
-        engine.loadImage(buffer, width, height);
-      }
-
-      // Clear undo history
-      undoManagerRef.current.clear();
-
-      // Load full mod
+      const image = await window.mapPainter.loadImage(modPath);
       setLoadingMessage('Loading mod files...');
-      setStatus('Loading mod files...');
       const modResult = await window.mapPainter.loadMod(modPath);
-
+      let provinces: ProvinceData[];
       if (!modResult.success || !modResult.data) {
-        const errMsg = modResult.error || 'Unknown error';
-        console.warn('load-mod warning:', errMsg);
-        setStatus(`Loaded map (${imgW}x${imgH}) — ${errMsg}`);
-
-        const defResult = await window.mapPainter.loadDefinitions(modPath);
-        if (!defResult.error) {
-          registryRef.current.loadFromDefinitions(defResult.provinces as ProvinceData[]);
-          setProvinceCount(registryRef.current.count);
-        }
+        const definitions = await window.mapPainter.loadDefinitions(modPath);
+        if (definitions.error) throw new Error(definitions.error);
+        provinces = definitions.provinces as ProvinceData[];
+        setLandedTitles([]);
+        setModLoaded(false);
+        setStatus(`Loaded map (${image.width}x${image.height}) — ${modResult.error ?? 'mod metadata unavailable'}`);
       } else {
-        registryRef.current.loadFromDefinitions(modResult.data.provinces);
-        setProvinceCount(registryRef.current.count);
+        provinces = modResult.data.provinces;
         setLandedTitles(modResult.data.landedTitles);
-        const titleCount = modResult.data.landedTitles.length;
-        setStatus(`Loaded ${imgW}x${imgH} map — ${registryRef.current.count} provinces, ${titleCount} title trees`);
         setModLoaded(true);
+        setStatus(`Loaded ${image.width}x${image.height} map — ${provinces.length} provinces, ${modResult.data.landedTitles.length} title trees`);
       }
+      const imgW = image.width;
+      const imgH = image.height;
+      engine.loadImage(image.buffer, imgW, imgH);
+      undoManagerRef.current.clear();
+      registryRef.current.loadFromDefinitions(provinces);
+      setProvinceCount(provinces.length);
+      sourceDefinitionsRef.current = structuredClone(provinces.map(({ id, color, name }) => ({ id, color, name })));
+      setTitleRenames([]);
+
+      modPathRef.current = modPath;
+      setModDirty(false);
+      setModifiedProvinceIds(new Set());
+      setSelectedProvince(null);
+      setDraftDirty(false);
+      setDraftLoadedName(null);
+
+      // Clear pending map
+      pendingMapRef.current.clear();
+      setPendingCount(0);
 
       // Populate sector spatial index
       setLoadingMessage('Building spatial index...');
@@ -115,21 +120,10 @@ export function useMapLoading({
         });
       }
 
-      modPathRef.current = modPath;
-      setModDirty(false);
-      setModifiedProvinceIds(new Set());
-      setSelectedProvince(null);
-      setDraftDirty(false);
-      setDraftLoadedName(null);
-
-      // Clear pending map
-      pendingMapRef.current.clear();
-      setPendingCount(0);
-
       // Fetch history file list
       setLoadingMessage('Loading history files...');
       try {
-        const hFiles = await window.mapPainter.listHistoryFiles();
+        const hFiles = await window.mapPainter.listHistoryFiles(modPath);
         setHistoryFiles(hFiles);
       } catch {
         setHistoryFiles([]);
@@ -163,11 +157,12 @@ export function useMapLoading({
       setStatus(`Error: ${msg}`);
       console.error('Failed to load map:', err);
     } finally {
+      loadingRef.current = false;
       setLoading(false);
       setLoadingMessage(null);
     }
   }, [
-    loading, engineRef, registryRef, undoManagerRef, pendingMapRef, modPathRef, toolManagerRef,
+    sourceDefinitionsRef, setTitleRenames, loading, engineRef, registryRef, undoManagerRef, pendingMapRef, modPathRef, toolManagerRef,
     setStatus, setLandedTitles, setModLoaded, setModDirty, setModifiedProvinceIds,
     setSelectedProvince, setHistoryFiles, setProvinceCount, setPendingCount,
     setHeightmapAvailable, setHeightmapVisible,
@@ -179,9 +174,14 @@ export function useMapLoading({
     handleOpenMapAction();
   }, [guardUnsavedDraft, handleOpenMapAction]);
 
+  const handleOpenProject = useCallback((modPath: string) => {
+    const action = () => { void handleOpenMapAction(modPath); };
+    if (guardUnsavedDraft(action)) action();
+  }, [handleOpenMapAction, guardUnsavedDraft]);
+
   return {
     loading, loadingMessage,
-    handleOpenMapAction, handleOpenMap,
+    handleOpenMapAction, handleOpenMap, handleOpenProject,
     setLoading, setLoadingMessage,
   };
 }

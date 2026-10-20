@@ -228,18 +228,7 @@ export default function MainCanvas({ onEngineReady, onCursorMove, onZoomChange, 
         return;
       }
 
-      // Lasso mode: draw polygon or shift+click toggle
-      if (lassoActive) {
-        if (e.shiftKey && onLassoShiftClick) {
-          onLassoShiftClick(coords.gx, coords.gy);
-          return;
-        }
-        // Start lasso drawing
-        isLassoDrawingRef.current = true;
-        lassoPointsRef.current = [{ x: coords.gx, y: coords.gy }];
-        return;
-      }
-
+      // Explicit picking modes take priority over the active drawing tool.
       // Generator picking mode: sample color for Voronoi subdivision
       if (pickingGenerator && onPickGenerator) {
         const engine = engineRef.current;
@@ -275,6 +264,18 @@ export default function MainCanvas({ onEngineReady, onCursorMove, onZoomChange, 
           const color = engine.getPixel(coords.gx, coords.gy);
           onPickColor(color);
         }
+        return;
+      }
+
+      // Lasso mode: draw polygon or shift+click toggle
+      if (lassoActive) {
+        if (e.shiftKey && onLassoShiftClick) {
+          onLassoShiftClick(coords.gx, coords.gy);
+          return;
+        }
+        // Start lasso drawing
+        isLassoDrawingRef.current = true;
+        lassoPointsRef.current = [{ x: coords.gx, y: coords.gy }];
         return;
       }
 

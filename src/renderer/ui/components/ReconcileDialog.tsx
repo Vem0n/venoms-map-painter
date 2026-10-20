@@ -7,27 +7,30 @@
 
 import { useState, useCallback } from 'react';
 import { theme, cardStyle } from '../theme';
-import type { ProvinceData } from '@shared/types';
-import type { OrphanedParent } from '../../reconciliation/reconcile';
+import type { ProvinceData, LandedTitleNode } from '@shared/types';
+import { detectOrphanedParents } from '../../reconciliation/reconcile';
 
 interface ReconcileDialogProps {
   orphanedProvinces: ProvinceData[];
-  orphanedParents: OrphanedParent[];
+  landedTitles: LandedTitleNode[];
+  onKeepAll: () => void;
   onConfirm: (removedIds: number[], removedTitleKeys: string[]) => void;
   onCancel: () => void;
 }
 
 export default function ReconcileDialog({
   orphanedProvinces,
-  orphanedParents,
+  landedTitles,
+  onKeepAll,
   onConfirm,
   onCancel,
 }: ReconcileDialogProps) {
   const [checkedIds, setCheckedIds] = useState<Set<number>>(
     () => new Set(orphanedProvinces.map(p => p.id))
   );
-  const [checkedTitles, setCheckedTitles] = useState<Set<string>>(
-    () => new Set(orphanedParents.map(p => p.key))
+  const orphanedParents = detectOrphanedParents(landedTitles, checkedIds);
+  const [uncheckedTitles, setUncheckedTitles] = useState<Set<string>>(
+    () => new Set<string>()
   );
 
   const toggleId = useCallback((id: number) => {
@@ -40,7 +43,7 @@ export default function ReconcileDialog({
   }, []);
 
   const toggleTitle = useCallback((key: string) => {
-    setCheckedTitles(prev => {
+    setUncheckedTitles(prev => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
       else next.add(key);
@@ -57,8 +60,8 @@ export default function ReconcileDialog({
   }, []);
 
   const handleConfirm = useCallback(() => {
-    onConfirm(Array.from(checkedIds), Array.from(checkedTitles));
-  }, [checkedIds, checkedTitles, onConfirm]);
+    onConfirm(Array.from(checkedIds), orphanedParents.filter(p => !uncheckedTitles.has(p.key)).map(p => p.key));
+  }, [checkedIds, orphanedParents, uncheckedTitles, onConfirm]);
 
   const removeCount = checkedIds.size;
 
@@ -68,7 +71,8 @@ export default function ReconcileDialog({
         <h2 style={titleStyle}>Province Reconciliation</h2>
         <p style={descStyle}>
           The following provinces no longer have any pixels on the map.
-          Select which to remove from mod files. IDs will be renumbered sequentially.
+          Removal is optional. Checked provinces will be deleted and surviving IDs renumbered.
+          Choose Keep All &amp; Save to save your edits without deleting provinces or renumbering existing IDs.
         </p>
 
         {/* Orphaned Provinces */}
@@ -120,7 +124,7 @@ export default function ReconcileDialog({
                 <label key={p.key} style={rowStyle}>
                   <input
                     type="checkbox"
-                    checked={checkedTitles.has(p.key)}
+                    checked={!uncheckedTitles.has(p.key)}
                     onChange={() => toggleTitle(p.key)}
                     style={{ marginRight: theme.space.md }}
                   />
@@ -150,13 +154,13 @@ export default function ReconcileDialog({
           <p style={footnoteStyle}>Saving applies to the active tab only.</p>
           <div style={{ display: 'flex', gap: theme.space.md }}>
             <button style={cancelBtnStyle} onClick={onCancel}>Cancel</button>
+            <button style={saveBtnStyle} onClick={onKeepAll}>Keep All &amp; Save</button>
             <button
-              style={removeCount > 0 ? confirmBtnStyle : saveBtnStyle}
+              disabled={removeCount === 0}
+              style={{ ...confirmBtnStyle, opacity: removeCount === 0 ? 0.5 : 1 }}
               onClick={handleConfirm}
             >
-              {removeCount > 0
-                ? `Remove & Renumber (${removeCount})`
-                : 'Save Without Changes'}
+              {`Remove & Renumber (${removeCount})`}
             </button>
           </div>
         </div>

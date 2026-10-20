@@ -44,6 +44,7 @@ void main() {
 /** Fragment shader: samples the tile texture, optionally blends overlay + heightmap + grid */
 export const TILE_FRAGMENT_SHADER = `#version 300 es
 precision highp float;
+precision highp sampler3D;
 
 uniform sampler2D u_tileTexture;
 uniform sampler2D u_overlayTexture;
@@ -53,9 +54,39 @@ uniform bool u_showOverlay;
 uniform bool u_showHeightmap;
 uniform float u_heightmapOpacity;
 uniform vec2 u_tileSize;
+uniform vec2 u_tilePosition;
+uniform vec2 u_mapSize;
+uniform float u_zoom;
+uniform bool u_showTitle;
+uniform vec3 u_titleTint;
+uniform sampler3D u_titleColors;
+uniform sampler2D u_titleLeft;
+uniform sampler2D u_titleRight;
+uniform sampler2D u_titleUp;
+uniform sampler2D u_titleDown;
 
 in vec2 v_texCoord;
 out vec4 fragColor;
+
+// Neighbor textures keep the union outline continuous across tile seams.
+bool titleMember(ivec2 pixel) {
+    vec2 world = u_tilePosition + vec2(pixel);
+    if (any(lessThan(world, vec2(0.0))) || any(greaterThanEqual(world, u_mapSize))) return false;
+    ivec2 size = ivec2(u_tileSize);
+    vec3 rgb;
+    if (pixel.x < 0) rgb = texelFetch(u_titleLeft, pixel + ivec2(size.x, 0), 0).rgb;
+    else if (pixel.x >= size.x) rgb = texelFetch(u_titleRight, pixel - ivec2(size.x, 0), 0).rgb;
+    else if (pixel.y < 0) rgb = texelFetch(u_titleUp, pixel + ivec2(0, size.y), 0).rgb;
+    else if (pixel.y >= size.y) rgb = texelFetch(u_titleDown, pixel - ivec2(0, size.y), 0).rgb;
+    else rgb = texelFetch(u_tileTexture, pixel, 0).rgb;
+    ivec3 key = ivec3(floor(rgb * 255.0 + 0.5));
+    return texelFetch(u_titleColors, key, 0).r > 0.5;
+}
+
+bool titleEdge(ivec2 pixel, int radius) {
+    return !titleMember(pixel + ivec2(radius, 0)) || !titleMember(pixel - ivec2(radius, 0)) ||
+           !titleMember(pixel + ivec2(0, radius)) || !titleMember(pixel - ivec2(0, radius));
+}
 
 void main() {
     fragColor = texture(u_tileTexture, v_texCoord);
@@ -71,6 +102,21 @@ void main() {
         vec4 overlay = texture(u_overlayTexture, v_texCoord);
         if (overlay.a > 0.0) {
             fragColor = mix(fragColor, overlay, overlay.a);
+        }
+    }
+
+    // Display-only de jure membership; internal province boundaries stay unoutlined.
+    if (u_showTitle) {
+        ivec2 pixel = ivec2(floor(v_texCoord * u_tileSize));
+        if (titleMember(pixel)) {
+            int radius = int(clamp(ceil(2.0 / u_zoom), 1.0, 32.0));
+            if (titleEdge(pixel, 1) || titleEdge(pixel, radius)) {
+                fragColor = vec4(mix(u_titleTint, vec3(1.0), 0.2), 1.0);
+            } else {
+                fragColor.rgb = mix(fragColor.rgb, u_titleTint, 0.12);
+            }
+        } else {
+            fragColor.rgb *= 0.45;
         }
     }
 
