@@ -49,7 +49,8 @@ if (!process.versions.electron) {
   const deadline = setTimeout(() => finish(new Error('Electron smoke test timed out')), process.env.CI ? 180000 : 45000);
 
   (async () => {
-    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'vmp-electron-smoke-'));
+    // Use one path spelling for fixtures and app metadata (Windows TEMP may use RUNNER~1).
+    tempDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'vmp-electron-smoke-')));
     app.setPath('userData', path.join(tempDir, 'profile'));
     const modPath = path.join(tempDir, 'mod');
     await fs.mkdir(path.join(modPath, 'map_data'), { recursive: true });
