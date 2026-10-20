@@ -15,9 +15,21 @@ if (!process.versions.electron) {
   const switches = [];
   if (env.VMP_SMOKE_SOFTWARE_GPU === '1') switches.push('--use-angle=swiftshader', '--enable-unsafe-swiftshader');
   if (env.VMP_SMOKE_NO_SANDBOX === '1') switches.push('--no-sandbox');
-  const child = spawn(require('electron'), [...switches, __filename, appRoot], { env, stdio: 'inherit' });
-  child.on('error', (error) => { console.error(error); process.exitCode = 1; });
-  child.on('exit', (code) => { process.exitCode = code ?? 1; });
+  (async () => {
+    // The parent removes the profile only after Electron releases Windows file locks.
+    const tempDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'vmp-electron-smoke-')));
+    try {
+      process.exitCode = await new Promise((resolve, reject) => {
+        const child = spawn(require('electron'), [...switches, __filename, appRoot], {
+          env: { ...env, VMP_SMOKE_TEMP_DIR: tempDir }, stdio: 'inherit',
+        });
+        child.once('error', reject);
+        child.once('exit', code => resolve(code ?? 1));
+      });
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    }
+  })().catch(error => { console.error(error); process.exitCode = 1; });
 } else {
   const { app, ipcMain } = require('electron');
   // Record every IPC operation capable of writing, including map-load backups.
@@ -40,7 +52,7 @@ if (!process.versions.electron) {
     clearTimeout(deadline);
     if (error) console.error(error);
     try {
-      if (tempDir) await fs.rm(tempDir, { recursive: true, force: true });
+      if (tempDir && !process.env.VMP_SMOKE_TEMP_DIR) await fs.rm(tempDir, { recursive: true, force: true });
     } finally {
       // Bypass the application's interactive unsaved-changes guard in this test.
       app.exit(error ? 1 : 0);
@@ -50,7 +62,7 @@ if (!process.versions.electron) {
 
   (async () => {
     // Use one path spelling for fixtures and app metadata (Windows TEMP may use RUNNER~1).
-    tempDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'vmp-electron-smoke-')));
+    tempDir = process.env.VMP_SMOKE_TEMP_DIR || await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'vmp-electron-smoke-')));
     app.setPath('userData', path.join(tempDir, 'profile'));
     const modPath = path.join(tempDir, 'mod');
     await fs.mkdir(path.join(modPath, 'map_data'), { recursive: true });

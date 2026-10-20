@@ -152,8 +152,7 @@ module.exports = async function smokeProjects(window, tempDir, writeCalls) {
       await openProjects();
       if (!findProject('Elder Kings Updated') || !findProject('New Workshop Map') || findProject('AGOT Test')) throw new Error('Project list did not persist after renderer restart');
       click('Remove Folder');
-      await waitFor(() => !button('Rescan') || button('Rescan').disabled, 'Folder removal did not update the library');
-      if (rows().length) throw new Error('Forgetting a Workshop folder left stale projects');
+      await waitFor(() => !button('Add Workshop Folder').disabled && button('Rescan')?.disabled && rows().length === 0, 'Folder removal did not finish or left stale projects');
       click('Close');
     `);
     assert.deepEqual(await snapshot(workshop), beforeRescan, 'Removing a library folder deleted or changed mod files');
