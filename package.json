@@ -1,6 +1,6 @@
 {
   "name": "venoms-map-painter",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "description": "A desktop tool for painting CK3 mod province maps with automatic file generation",
   "author": "Ven0m",
   "license": "MIT",

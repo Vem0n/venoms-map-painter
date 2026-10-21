@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.2.1 — Hegemony Support & Inspect Selection
+
+- Fixed provinces missing from the title hierarchy when their titles are nested under a hegemony (`h_`). Inspect now shows a green Hegemony dot and supports highlighting and following hegemony territory across province clicks.
+- Fixed UTF-8 byte-order marks being included in the first parsed title key.
+- Gave Inspect priority over lasso selection for clicks, Shift-clicks and drags, preserving the existing lasso selection when switching back to Paint.
+
 ## v2.2.0 — Map Editing, Save Safety & Automated Releases
 
 - Fixed forgetting Workshop folders on Windows when filesystem-normalized paths differ in casing or use short-name aliases; offline folders can still be removed from the project list.
