@@ -84,6 +84,12 @@ religion = catholic`;
     expect(nodes).toHaveLength(2);
   });
 
+  it('does not include a UTF-8 BOM in the first title key', () => {
+    expect(parseParadoxScript('\uFEFFh_arathor = { e_lordaeron = {} }')[0]).toMatchObject({
+      type: 'block', key: 'h_arathor', children: [{ type: 'block', key: 'e_lordaeron' }],
+    });
+  });
+
   it('parses mixed key-values and blocks', () => {
     const source = `
 name = "Test County"

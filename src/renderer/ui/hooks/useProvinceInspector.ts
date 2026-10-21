@@ -49,7 +49,7 @@ export function useProvinceInspector({
     ? hierarchyIndex.chains.get(selectedProvince.id)?.find(title => title.tier === highlightedTier)
     : undefined;
   const titleProvinceCount = activeTitle ? hierarchyIndex.members.get(activeTitle.key)?.size ?? 0 : 0;
-  const tierLabel = highlightedTier ? { c: 'County', d: 'Duchy', k: 'Kingdom', e: 'Empire' }[highlightedTier] : null;
+  const tierLabel = highlightedTier ? { c: 'County', d: 'Duchy', k: 'Kingdom', e: 'Empire', h: 'Hegemony' }[highlightedTier] : null;
   const titleHighlightLabel = activeTitle?.key ?? (tierLabel ? `${tierLabel} view — no ${tierLabel.toLowerCase()} assigned` : '');
 
   const clearTitleHighlight = useCallback(() => {
@@ -72,7 +72,7 @@ export function useProvinceInspector({
       const province = registryRef.current.getProvinceById(id);
       return province ? [province.color] : [];
     });
-    const tint = { b: theme.text.secondary, c: theme.accent.blue, d: theme.accent.purple, k: theme.accent.yellow, e: theme.accent.red }[activeTitle.tier] ?? theme.text.secondary;
+    const tint = { b: theme.text.secondary, c: theme.accent.blue, d: theme.accent.purple, k: theme.accent.yellow, e: theme.accent.red, h: theme.accent.green }[activeTitle.tier] ?? theme.text.secondary;
     engine.setTitleHighlight(colors, hexToRgb(tint)!);
   }, [activeTitle, hierarchyIndex, engineRef, registryRef]);
 

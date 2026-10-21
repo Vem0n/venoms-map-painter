@@ -96,7 +96,7 @@ export class ModFileManager {
 
   /**
    * Get the de jure hierarchy for a province.
-   * Returns array from barony up to empire.
+   * Returns array from barony up to hegemony.
    */
   getHierarchy(provinceId: number): LandedTitleNode[] {
     if (!this.titleIndex) return [];
@@ -538,6 +538,7 @@ export class ModFileManager {
 function getChildIndent(parentKey: string): string {
   const tier = parentKey.substring(0, 2);
   switch (tier) {
+    case 'h_': return '\t';          // hegemony child = empire depth
     case 'e_': return '\t\t';      // empire child = kingdom depth
     case 'k_': return '\t\t\t';    // kingdom child = duchy depth
     case 'd_': return '\t\t\t\t';  // duchy child = county depth

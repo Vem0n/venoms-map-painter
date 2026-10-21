@@ -12,12 +12,13 @@ import fs from 'fs/promises';
 import path from 'path';
 
 /** Title tier inferred from the key prefix */
-function inferTier(key: string): 'b' | 'c' | 'd' | 'k' | 'e' {
+function inferTier(key: string): LandedTitleNode['tier'] {
   if (key.startsWith('b_')) return 'b';
   if (key.startsWith('c_')) return 'c';
   if (key.startsWith('d_')) return 'd';
   if (key.startsWith('k_')) return 'k';
   if (key.startsWith('e_')) return 'e';
+  if (key.startsWith('h_')) return 'h';
   return 'b'; // fallback
 }
 
@@ -36,13 +37,13 @@ function extractColor(node: ParadoxNode): RGB | undefined {
 
 /**
  * Convert a ParadoxNode tree into a LandedTitleNode tree.
- * Only processes nodes whose key starts with a title prefix (e_, k_, d_, c_, b_).
+ * Only processes nodes whose key starts with a title prefix (h_, e_, k_, d_, c_, b_).
  */
 function paradoxToTitle(node: ParadoxNode): LandedTitleNode | null {
   if (!node.key || node.type !== 'block') return null;
 
   // Only process title-prefixed keys
-  if (!node.key.match(/^[ekdcb]_/)) return null;
+  if (!node.key.match(/^[hekdcb]_/)) return null;
 
   const result: LandedTitleNode = {
     key: node.key,
@@ -57,7 +58,7 @@ function paradoxToTitle(node: ParadoxNode): LandedTitleNode | null {
       result.color = extractColor(child);
     } else if (child.key === 'province' && child.type === 'value') {
       result.provinceId = parseInt(child.value || '0', 10);
-    } else if (child.type === 'block' && child.key?.match(/^[ekdcb]_/)) {
+    } else if (child.type === 'block' && child.key?.match(/^[hekdcb]_/)) {
       const childTitle = paradoxToTitle(child);
       if (childTitle) result.children.push(childTitle);
     }
@@ -134,7 +135,7 @@ export function buildTitleIndex(titles: LandedTitleNode[]): TitleIndex {
 
 /**
  * Resolve the de jure hierarchy for a province ID.
- * Returns an array from barony up to empire: [b_, c_, d_, k_, e_]
+ * Returns an array from barony up to hegemony: [b_, c_, d_, k_, e_, h_]
  */
 export function resolveHierarchy(
   provinceId: number,

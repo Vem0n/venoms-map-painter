@@ -55,6 +55,12 @@ describe('de jure hierarchy visualization', () => {
     expect([...index.members.get('c_new')!]).toEqual([1, 2]);
   });
 
+  it('includes explicitly parented pending provinces in their hegemony', () => {
+    const index = indexTitleHierarchy([title('h_one', roots)], provinces, [pending(1, 'c_new', true, 'd_two')]);
+    expect(index.chains.get(1)?.map(node => node.key)).toEqual(['b_new_1', 'c_new', 'd_two', 'k_one', 'e_one', 'h_one']);
+    expect([...index.members.get('h_one')!]).toEqual([1, 2, 3, 4]);
+  });
+
   it('leaves unknown parents and unlanded titles empty', () => {
     const index = indexTitleHierarchy([...roots, title('e_unlanded')], provinces, [pending(1, 'c_missing')]);
     expect(index.chains.has(1)).toBe(false);

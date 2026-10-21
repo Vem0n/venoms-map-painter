@@ -131,7 +131,7 @@ function isIdentChar(ch: string): boolean {
  * Parse a Paradox script string into an AST.
  */
 export function parseParadoxScript(source: string): ParadoxNode[] {
-  const tokens = tokenize(source);
+  const tokens = tokenize(source.replace(/^\uFEFF/, ''));
   let pos = 0;
 
   function parseBlock(): ParadoxNode[] {

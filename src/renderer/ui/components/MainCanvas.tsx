@@ -267,6 +267,12 @@ export default function MainCanvas({ onEngineReady, onCursorMove, onZoomChange, 
         return;
       }
 
+      // The Inspect tab owns province selection, even when lasso is the active tool.
+      if (inspectorMode && onProvinceClick) {
+        onProvinceClick(coords.gx, coords.gy);
+        return;
+      }
+
       // Lasso mode: draw polygon or shift+click toggle
       if (lassoActive) {
         if (e.shiftKey && onLassoShiftClick) {
@@ -276,12 +282,6 @@ export default function MainCanvas({ onEngineReady, onCursorMove, onZoomChange, 
         // Start lasso drawing
         isLassoDrawingRef.current = true;
         lassoPointsRef.current = [{ x: coords.gx, y: coords.gy }];
-        return;
-      }
-
-      // Inspector mode: click selects a province instead of painting
-      if (inspectorMode && onProvinceClick) {
-        onProvinceClick(coords.gx, coords.gy);
         return;
       }
 
