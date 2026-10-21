@@ -34,8 +34,8 @@ export interface ProvinceData {
   color: RGB;
   /** Province display name */
   name: string;
-  /** Title tier: b=barony, c=county, d=duchy, k=kingdom, e=empire */
-  titleTier?: 'b' | 'c' | 'd' | 'k' | 'e';
+  /** Title tier: b=barony, c=county, d=duchy, k=kingdom, e=empire, h=hegemony */
+  titleTier?: LandedTitleNode['tier'];
   /** Title key, e.g. "c_example" */
   titleKey?: string;
   /** Culture ID (base, before any date overrides) */
@@ -108,7 +108,7 @@ export interface LandedTitleNode {
   /** Title key, e.g. "e_britannia", "k_england", "c_london" */
   key: string;
   /** Title tier inferred from prefix */
-  tier: 'b' | 'c' | 'd' | 'k' | 'e';
+  tier: 'b' | 'c' | 'd' | 'k' | 'e' | 'h';
   /** Color if specified */
   color?: RGB;
   /** Province ID if this is a barony */

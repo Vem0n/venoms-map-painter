@@ -5,7 +5,7 @@
  * - Shows province ID, name, color
  * - Loads history data (culture, religion, holding, terrain)
  * - Date dropdown to browse between existing date-stamped override entries
- * - Resolves and displays the de jure hierarchy upward (barony -> county -> duchy -> kingdom -> empire)
+ * - Resolves and displays the de jure hierarchy upward (barony -> county -> duchy -> kingdom -> empire -> hegemony)
  * - Hierarchy titles are editable inline (rename title keys)
  * - Culture and religion are county-scoped, shown at county level
  * - All fields are editable inline
@@ -21,9 +21,10 @@ const TIER_LABELS: Record<string, string> = {
   d: 'Duchy',
   k: 'Kingdom',
   e: 'Empire',
+  h: 'Hegemony',
 };
 
-const TIER_ORDER = ['b', 'c', 'd', 'k', 'e'];
+const TIER_ORDER = ['b', 'c', 'd', 'k', 'e', 'h'];
 
 const TIER_COLORS: Record<string, string> = {
   b: theme.text.secondary,
@@ -31,6 +32,7 @@ const TIER_COLORS: Record<string, string> = {
   d: theme.accent.purple,
   k: theme.accent.yellow,
   e: theme.accent.red,
+  h: theme.accent.green,
 };
 
 /** All valid CK3 terrain types (from common/province_terrain/) */

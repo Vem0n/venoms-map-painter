@@ -181,7 +181,7 @@ export function registerIpcHandlers(): void {
 
   /**
    * Get the de jure hierarchy for a province.
-   * Returns array of LandedTitleNode from barony up to empire.
+   * Returns array of LandedTitleNode from barony up to hegemony.
    */
   ipcMain.handle('get-hierarchy', async (_event: IpcMainInvokeEvent, modPath: string, provinceId: number) => {
     return getManager(modPath).getHierarchy(provinceId);
